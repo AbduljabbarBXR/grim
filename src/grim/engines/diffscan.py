@@ -1,0 +1,203 @@
+"""Artifact diffing: baseline vs current — the drift detector for active compromise.
+
+Handles the common backup case where everything is wrapped in a timestamped root
+directory: the shared wrapper prefix is stripped before comparison.
+
+Reports added/removed/size-changed files and classifies suspicious additions.
+"""
+
+from __future__ import annotations
+
+from ..core.findings import Finding, make_id
+from .exposure import (
+    MAX_ENTRIES,
+    READ_LIMIT,
+    Entry,
+    Source,
+    _check_by_name,
+    _check_content,
+    _in_web_path,
+    open_source,
+)
+
+MAX_CLASSIFY = 5_000
+SUSPICIOUS_EXT = (
+    ".php", ".phtml", ".phar", ".sh", ".bash", ".pl", ".py", ".cgi",
+    ".exe", ".elf", ".bin", ".so",
+)
+
+
+def diff_artifacts(path_a: str, path_b: str, classify_limit: int = MAX_CLASSIFY) -> tuple[list[Finding], dict]:
+    source_a = open_source(path_a)
+    manifest_a_raw = _manifest(source_a)
+    source_a.close()
+
+    source_b = open_source(path_b)
+    manifest_b_raw = _manifest(source_b)
+
+    root_a = _common_root(manifest_a_raw)
+    root_b = _common_root(manifest_b_raw)
+    manifest_a = _normalize(manifest_a_raw, root_a)
+    manifest_b = _normalize(manifest_b_raw, root_b)
+
+    added = sorted(set(manifest_b) - set(manifest_a))
+    removed = sorted(set(manifest_a) - set(manifest_b))
+    changed = sorted(p for p in (set(manifest_a) & set(manifest_b)) if manifest_a[p] != manifest_b[p])
+
+    added_set = set(added)
+    findings: list[Finding] = []
+    stats = {
+        "added": len(added),
+        "removed": len(removed),
+        "size_changed": len(changed),
+        "classified": 0,
+        "root_a": root_a,
+        "root_b": root_b,
+    }
+
+    for rel in changed:
+        if _looks_executable(rel):
+            findings.append(
+                Finding(
+                    id=make_id("DIFF", "changed-exec", rel),
+                    severity="high",
+                    confidence=0.75,
+                    category="CWE-912",
+                    owasp="A08:2021",
+                    title="Web-executable file changed between baseline and current",
+                    description="Modified scripts in web paths are a primary malware persistence vector.",
+                    location={"file": rel},
+                    evidence=f"{manifest_a[rel]} B -> {manifest_b[rel]} B",
+                    remediation="Diff against baseline; remove if unexpected; scan for webshell indicators.",
+                    engine="grim-diff",
+                    tags=["drift", "changed"],
+                )
+            )
+
+    if added_set:
+        try:
+            for entry, reader in source_b.iter_items():
+                if entry.is_dir or entry.is_link:
+                    continue
+                npath = _strip_root(entry.path, root_b)
+                if npath not in added_set or stats["classified"] >= classify_limit:
+                    continue
+                data = b""
+                if entry.size > 0 and (_in_web_path(npath) or _looks_suspicious_name(npath)):
+                    data = reader(min(READ_LIMIT, entry.size + 1))
+                norm_entry = Entry(path=npath, size=entry.size)
+                for f in _classify(norm_entry, data):
+                    f.tags.append("added")
+                    findings.append(f)
+                stats["classified"] += 1
+        finally:
+            source_b.close()
+    else:
+        source_b.close()
+
+    for rel in removed[:classify_limit]:
+        if _looks_executable(rel):
+            findings.append(
+                Finding(
+                    id=make_id("DIFF", "removed-exec", rel),
+                    severity="medium",
+                    confidence=0.6,
+                    category="CWE-912",
+                    owasp="A08:2021",
+                    title="Executable file present in baseline but missing now",
+                    description="Could be legitimate cleanup or removal by an intruder. Verify with change history.",
+                    location={"file": rel},
+                    evidence=f"was {manifest_a[rel]} B",
+                    remediation="Confirm who removed the file and why.",
+                    engine="grim-diff",
+                    tags=["drift", "removed"],
+                )
+            )
+
+    findings.append(
+        Finding(
+            id=make_id("DIFF", "summary", f"{path_a}|{path_b}"),
+            severity="info",
+            confidence=1.0,
+            category="CWE-1059",
+            owasp="A08:2021",
+            title="Artifact drift summary",
+            description=f"Added: {stats['added']}, removed: {stats['removed']}, size-changed: {stats['size_changed']}"
+            + (f" (wrapper roots stripped: '{root_a}' / '{root_b}')" if root_a and root_b and root_a != root_b else ""),
+            location={"file": f"a={path_a} b={path_b}"},
+            evidence=f"classified {stats['classified']} added entries",
+            engine="grim-diff",
+            tags=["drift", "summary"],
+        )
+    )
+    return findings, stats
+
+
+def build_manifest(path: str) -> dict[str, int]:
+    source = open_source(path)
+    try:
+        return _manifest(source)
+    finally:
+        source.close()
+
+
+def _manifest(source: Source) -> dict[str, int]:
+    manifest: dict[str, int] = {}
+    for entry in source.iter_entries():
+        if entry.is_dir or entry.is_link:
+            continue
+        manifest[entry.path] = entry.size
+        if len(manifest) >= MAX_ENTRIES:
+            break
+    return manifest
+
+
+def _common_root(manifest: dict[str, int]) -> str | None:
+    """If every path shares one top-level directory, return it (backup wrapper)."""
+    if not manifest:
+        return None
+    roots = set()
+    for k in manifest:
+        if "/" not in k:
+            return None
+        roots.add(k.split("/", 1)[0])
+        if len(roots) > 1:
+            return None
+    return roots.pop()
+
+
+def _strip_root(path: str, root: str | None) -> str:
+    if root and path.startswith(root + "/"):
+        return path[len(root) + 1 :]
+    return path
+
+
+def _normalize(manifest: dict[str, int], root: str | None) -> dict[str, int]:
+    if not root:
+        return manifest
+    return {_strip_root(k, root): v for k, v in manifest.items()}
+
+
+def _classify(entry: Entry, data: bytes) -> list[Finding]:
+    out: list[Finding] = []
+    _check_by_name(entry, out)
+    if data:
+        _check_content(entry, data, out)
+    return out
+
+
+def _looks_suspicious_name(rel: str) -> bool:
+    lower = rel.lower()
+    name = lower.rsplit("/", 1)[-1]
+    if name.startswith(".") and not name.startswith(".htaccess"):
+        return True
+    if name in {"error_log", "php_errorlog", ".user.ini"}:
+        return True
+    return _looks_executable(rel)
+
+
+def _looks_executable(rel: str) -> bool:
+    lower = rel.lower()
+    return lower.endswith(SUSPICIOUS_EXT) and (
+        "public" in lower or "upload" in lower or "www" in lower or "htdocs" in lower or "web/" in lower
+    )

@@ -5,6 +5,44 @@
 > Works on any stack. For AI-built apps and existing complex codebases. Point it at a folder,
 > a repo, or an authorized live URL, and get a prioritized, evidence-backed report with fixes.
 
+**Status: v1 implemented and validated against a real compromise.** Zero runtime dependencies
+(Python stdlib only), runs on Linux/macOS/Windows and Termux. 31 tests passing.
+
+---
+
+## Quickstart
+
+```bash
+# from the repo root (no install needed)
+PYTHONPATH=src python3 -m grim list
+PYTHONPATH=src python3 -m grim scan /path/to/app            # one-shot audit (md report)
+PYTHONPATH=src python3 -m grim scan backup.tar.gz --format json --out report.json
+PYTHONPATH=src python3 -m grim tool audit_exposure --path /path/to/backup.tar.gz
+PYTHONPATH=src python3 -m grim diff old.tar.gz new.tar.gz   # drift / active compromise
+PYTHONPATH=src python3 -m grim mcp                          # MCP server on stdio
+```
+
+Optional real install: `pip install -e .` (then `grim ...` works anywhere).
+
+### Use as MCP server in opencode
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "grim": {
+      "type": "local",
+      "command": ["python3", "-m", "grim", "mcp"],
+      "enabled": true,
+      "environment": { "PYTHONPATH": "/path/to/grim/src" }
+    }
+  }
+}
+```
+
+Then the agent can call `audit_exposure`, `scan_code`, `diff_artifacts`, `scan`, and friends
+directly while building or reviewing any app.
+
 ---
 
 ## Table of Contents
