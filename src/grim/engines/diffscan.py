@@ -3,10 +3,16 @@
 Handles the common backup case where everything is wrapped in a timestamped root
 directory: the shared wrapper prefix is stripped before comparison.
 
-Reports added/removed/size-changed files and classifies suspicious additions.
+Manifests store size plus a content hash (SHA-256 of size + a bounded content
+prefix), so a same-size modification is still detected as changed. Changed files
+are then content-scanned for webshell and exposure indicators, closing the
+active-compromise blind spot.
 """
 
 from __future__ import annotations
+
+import hashlib
+from pathlib import Path
 
 from ..core.findings import Finding, make_id
 from .exposure import (
@@ -26,6 +32,14 @@ SUSPICIOUS_EXT = (
     ".exe", ".elf", ".bin", ".so",
 )
 
+HASH_PREFIX_LIMIT = 131_072  # hash the first 128 KB of each file
+
+
+def _entry_hash(entry: Entry, reader) -> str:
+    """Hash of size plus a bounded content prefix. Same-size edits change the hash."""
+    data = reader(HASH_PREFIX_LIMIT) if entry.size > 0 else b""
+    return hashlib.sha256(f"{entry.size}|".encode() + data).hexdigest()[:24]
+
 
 def diff_artifacts(path_a: str, path_b: str, classify_limit: int = MAX_CLASSIFY) -> tuple[list[Finding], dict]:
     source_a = open_source(path_a)
@@ -40,23 +54,58 @@ def diff_artifacts(path_a: str, path_b: str, classify_limit: int = MAX_CLASSIFY)
     manifest_a = _normalize(manifest_a_raw, root_a)
     manifest_b = _normalize(manifest_b_raw, root_b)
 
+    def sig(m: dict, p: str) -> tuple[int, str] | None:
+        e = m.get(p)
+        return (e["size"], e["hash"]) if e else None
+
     added = sorted(set(manifest_b) - set(manifest_a))
     removed = sorted(set(manifest_a) - set(manifest_b))
-    changed = sorted(p for p in (set(manifest_a) & set(manifest_b)) if manifest_a[p] != manifest_b[p])
+    changed = sorted(
+        p
+        for p in (set(manifest_a) & set(manifest_b))
+        if sig(manifest_a, p) != sig(manifest_b, p)
+    )
 
     added_set = set(added)
+    changed_set = set(changed)
     findings: list[Finding] = []
     stats = {
         "added": len(added),
         "removed": len(removed),
-        "size_changed": len(changed),
+        "changed": len(changed),
         "classified": 0,
         "root_a": root_a,
         "root_b": root_b,
     }
 
+    # content-scan both changed and added entries that are in web paths or suspicious
+    scan_targets = added_set | changed_set
+    if scan_targets:
+        try:
+            for entry, reader in source_b.iter_items():
+                if entry.is_dir or entry.is_link:
+                    continue
+                npath = _strip_root(entry.path, root_b)
+                if npath not in scan_targets or stats["classified"] >= classify_limit:
+                    continue
+                data = b""
+                # use the full (unstripped) entry path for web-path context, since the
+                # wrapper root is often the web root itself
+                if entry.size > 0 and (_in_web_path(entry.path) or _looks_suspicious_name(entry.path)):
+                    data = reader(min(READ_LIMIT, entry.size + 1))
+                norm_entry = Entry(path=npath, size=entry.size)
+                for f in _classify(norm_entry, data):
+                    f.tags.append("added" if npath in added_set else "changed")
+                    findings.append(f)
+                stats["classified"] += 1
+        finally:
+            source_b.close()
+    else:
+        source_b.close()
+
+    # changed executable marker (name level) when content scan did not flag it
     for rel in changed:
-        if _looks_executable(rel):
+        if _looks_executable(rel) and not any(f.location.get("file") == rel for f in findings):
             findings.append(
                 Finding(
                     id=make_id("DIFF", "changed-exec", rel),
@@ -67,33 +116,12 @@ def diff_artifacts(path_a: str, path_b: str, classify_limit: int = MAX_CLASSIFY)
                     title="Web-executable file changed between baseline and current",
                     description="Modified scripts in web paths are a primary malware persistence vector.",
                     location={"file": rel},
-                    evidence=f"{manifest_a[rel]} B -> {manifest_b[rel]} B",
+                    evidence=f"{manifest_a[rel]['size']} B -> {manifest_b[rel]['size']} B",
                     remediation="Diff against baseline; remove if unexpected; scan for webshell indicators.",
                     engine="grim-diff",
                     tags=["drift", "changed"],
                 )
             )
-
-    if added_set:
-        try:
-            for entry, reader in source_b.iter_items():
-                if entry.is_dir or entry.is_link:
-                    continue
-                npath = _strip_root(entry.path, root_b)
-                if npath not in added_set or stats["classified"] >= classify_limit:
-                    continue
-                data = b""
-                if entry.size > 0 and (_in_web_path(npath) or _looks_suspicious_name(npath)):
-                    data = reader(min(READ_LIMIT, entry.size + 1))
-                norm_entry = Entry(path=npath, size=entry.size)
-                for f in _classify(norm_entry, data):
-                    f.tags.append("added")
-                    findings.append(f)
-                stats["classified"] += 1
-        finally:
-            source_b.close()
-    else:
-        source_b.close()
 
     for rel in removed[:classify_limit]:
         if _looks_executable(rel):
@@ -107,7 +135,7 @@ def diff_artifacts(path_a: str, path_b: str, classify_limit: int = MAX_CLASSIFY)
                     title="Executable file present in baseline but missing now",
                     description="Could be legitimate cleanup or removal by an intruder. Verify with change history.",
                     location={"file": rel},
-                    evidence=f"was {manifest_a[rel]} B",
+                    evidence=f"was {manifest_a[rel]['size']} B",
                     remediation="Confirm who removed the file and why.",
                     engine="grim-diff",
                     tags=["drift", "removed"],
@@ -122,10 +150,12 @@ def diff_artifacts(path_a: str, path_b: str, classify_limit: int = MAX_CLASSIFY)
             category="CWE-1059",
             owasp="A08:2021",
             title="Artifact drift summary",
-            description=f"Added: {stats['added']}, removed: {stats['removed']}, size-changed: {stats['size_changed']}"
-            + (f" (wrapper roots stripped: '{root_a}' / '{root_b}')" if root_a and root_b and root_a != root_b else ""),
+            description=(
+                f"Added: {stats['added']}, removed: {stats['removed']}, changed: {stats['changed']}"
+                + (f" (wrapper roots stripped: '{root_a}' / '{root_b}')" if root_a and root_b and root_a != root_b else "")
+            ),
             location={"file": f"a={path_a} b={path_b}"},
-            evidence=f"classified {stats['classified']} added entries",
+            evidence=f"classified {stats['classified']} added/changed entries",
             engine="grim-diff",
             tags=["drift", "summary"],
         )
@@ -133,7 +163,7 @@ def diff_artifacts(path_a: str, path_b: str, classify_limit: int = MAX_CLASSIFY)
     return findings, stats
 
 
-def build_manifest(path: str) -> dict[str, int]:
+def build_manifest(path: str) -> dict:
     source = open_source(path)
     try:
         return _manifest(source)
@@ -141,18 +171,21 @@ def build_manifest(path: str) -> dict[str, int]:
         source.close()
 
 
-def _manifest(source: Source) -> dict[str, int]:
-    manifest: dict[str, int] = {}
-    for entry in source.iter_entries():
+def _manifest(source: Source) -> dict:
+    manifest: dict = {}
+    for entry, reader in source.iter_items():
         if entry.is_dir or entry.is_link:
             continue
-        manifest[entry.path] = entry.size
+        manifest[entry.path] = {
+            "size": entry.size,
+            "hash": _entry_hash(entry, reader) if entry.size > 0 else "",
+        }
         if len(manifest) >= MAX_ENTRIES:
             break
     return manifest
 
 
-def _common_root(manifest: dict[str, int]) -> str | None:
+def _common_root(manifest: dict) -> str | None:
     """If every path shares one top-level directory, return it (backup wrapper)."""
     if not manifest:
         return None
@@ -172,7 +205,7 @@ def _strip_root(path: str, root: str | None) -> str:
     return path
 
 
-def _normalize(manifest: dict[str, int], root: str | None) -> dict[str, int]:
+def _normalize(manifest: dict, root: str | None) -> dict:
     if not root:
         return manifest
     return {_strip_root(k, root): v for k, v in manifest.items()}

@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 from ..core.findings import Finding, make_id
+from .flow import scan_flow
 
 MAX_FILE_BYTES = 1024 * 1024
 MAX_FILES = 20000
@@ -267,6 +268,9 @@ def scan_code(path: str, languages: list[str] | None = None, max_files: int = MA
         findings.extend(_scan_file(fp, lang))
         if fp.suffix == ".php" or fp.name.endswith(".blade.php"):
             pass
+
+    # lightweight taint/flow pass on top of the pattern rules
+    findings.extend(scan_flow(path, languages=languages, max_files=max_files))
     return findings
 
 
