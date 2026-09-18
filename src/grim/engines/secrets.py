@@ -15,7 +15,7 @@ from pathlib import Path
 from ..core import limits
 from ..core.findings import Finding, make_id
 
-MAX_FILE_BYTES = 2 * 1024 * 1024
+MAX_FILE_BYTES = 10 * 1024 * 1024
 MAX_FINDINGS = 800
 SKIP_DIRS = {
     ".git", "node_modules", "vendor", ".venv", "venv", "__pycache__",

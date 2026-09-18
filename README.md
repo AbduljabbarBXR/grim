@@ -7,10 +7,10 @@
 
 > MCP registry: `io.github.AbduljabbarBXR/grim-mcp` (mcp-name: io.github.AbduljabbarBXR/grim-mcp)
 
-**Status: v0.2.0.** v1 validated against a real compromise; v2 adds the planner, SBOM,
+**Status: v0.3.0.** v1 validated against a real compromise; v2 adds the planner, SBOM,
 MITRE ATT&CK tagging, an IoC hash feed, a persistent findings ledger, nested-archive
 scanning, a delta cache, and parallel scanning. Zero runtime dependencies (Python stdlib
-only), runs on Linux/macOS/Windows and Termux. 144 tests passing across Python 3.10–3.13.
+only), runs on Linux/macOS/Windows and Termux. 163 tests passing across Python 3.10–3.13.
 
 ---
 
@@ -24,6 +24,13 @@ PYTHONPATH=src python3 -m grim scan backup.tar.gz --format json --out report.jso
 PYTHONPATH=src python3 -m grim tool audit_exposure --path /path/to/backup.tar.gz
 PYTHONPATH=src python3 -m grim diff old.tar.gz new.tar.gz   # drift / active compromise
 PYTHONPATH=src python3 -m grim mcp                          # MCP server on stdio
+```
+
+### CI
+
+```bash
+grim ci /path/to/app --fail-on high --format md          # exit 1 when high+ found
+grim ci /path/to/app --format sarif --out grim.sarif     # upload SARIF to code scanning
 ```
 
 Optional real install: `pip install -e .` (then `grim ...` works anywhere).
@@ -244,12 +251,11 @@ GRIM's coverage model. Every tool belongs to one or more:
 ### v3
 
 - `update_feeds` — force-sync all rule/signature feeds and report versions
-- `ci_scan` — non-interactive mode for pipelines with exit codes
 - `fix_plan` — turn findings into patch suggestions / PR-ready diffs
 - Node agent mode — long-running watchdog for live servers without root (PHP/shell cron
   companion that reports into GRIM)
 
-### v2 shipped (0.2.0)
+### v2 shipped (0.2.x)
 
 | Tool / feature | Purpose |
 |---|---|
@@ -262,6 +268,8 @@ GRIM's coverage model. Every tool belongs to one or more:
 | Nested archives | `deep=true` streams the archive and descends into nested zip/tar without extracting ordinary files; only inner archives are spilled, bounded, and reported |
 | Delta cache | SHA-256 keyed per-file result cache; unchanged files are not re-scanned |
 | Parallel scanning | Thread-pool SAST across files (`workers`) |
+| SARIF 2.1.0 | `--format sarif` and the `report` tool for code-scanning integrations |
+| `ci_scan` / `grim ci` | CI gate: exit code by severity threshold (`--fail-on`) |
 
 ### Limits and truncation
 
@@ -280,7 +288,7 @@ truncated"), and prints a warning in Markdown reports — so partial results are
 | `GRIM_MAX_FILES` | 20000 | source files scanned (code/flow) |
 | `GRIM_MAX_FLOW_FINDINGS` | 400 | flow-analysis findings |
 | `GRIM_MAX_CODE_FILE_BYTES` | 1 MB | per-file code scan size |
-| `GRIM_MAX_SECRET_FILE_BYTES` | 2 MB | per-file secrets scan |
+| `GRIM_MAX_SECRET_FILE_BYTES` | 10 MB | per-file secrets scan |
 | `GRIM_MAX_SECRET_FINDINGS` | 800 | secrets findings |
 | `GRIM_MAX_SECRET_FILES` | 200000 | files secrets-scanned |
 | `GRIM_MAX_PACKAGES` | 3000 | dependency packages queried |
@@ -425,14 +433,16 @@ deny:
 **Phase 2 — v2 tools**
 - Shipped in 0.2.0: `plan`, `sbom` (CycloneDX/SPDX), `scan_iocs` + `update_feeds`,
   `ledger`, MITRE ATT&CK tagging, nested-archive scanning, delta cache, parallel scanning
+- Shipped in 0.3.0: SARIF 2.1.0 export, `ci_scan` / `grim ci` exit-code gate, production
+  hardening (correct delta cache, unreadable-archive reporting, single-pass code+flow,
+  parallel secrets, deterministic selection, streamed nested spill, wall-clock budget)
 - Multi-language SAST + lockfile coverage: Go, Rust, Java, Kotlin, C#, Ruby, Dart
 - Still planned: `inventory_endpoints`, `check_live` (passive first), `malware_scan`
-- SARIF export for CI
 
 **Phase 3 — platform**
 - Shipped: stdlib test runner, CI matrix (3.10–3.13) with lint + build/install smoke,
   PyPI-ready metadata (classifiers, urls, LICENSE, MANIFEST)
-- Still planned: `ci_scan` with fail thresholds, `fix_plan` PR generation, remote rules sync
+- Still planned: `fix_plan` PR generation, remote rules sync
 - Optional node agent (PHP/shell, no root) for shared hosting drift alerts
 - Dashboard/report hosting (optional paid tier)
 

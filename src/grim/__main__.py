@@ -21,7 +21,7 @@ import json
 import sys
 
 from . import __version__
-from .core.report import render_markdown, render_summary_line
+from .core.report import render_markdown, render_sarif, render_summary_line
 from .tools import TOOLS, call_tool
 
 
@@ -35,7 +35,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p_scan = sub.add_parser("scan", help="one-shot audit of a path or archive")
     p_scan.add_argument("path")
-    p_scan.add_argument("--format", choices=["md", "json"], default="md")
+    p_scan.add_argument("--format", choices=["md", "json", "sarif"], default="md")
     p_scan.add_argument("--out", default=None)
     p_scan.add_argument("--tools", default=None, help="subset: exposure,secrets,code,deps,iocs")
     p_scan.add_argument("--no-network", action="store_true")
@@ -46,14 +46,23 @@ def main(argv: list[str] | None = None) -> int:
     p_tool.add_argument("--path", default=None)
     p_tool.add_argument("--path-a", default=None)
     p_tool.add_argument("--path-b", default=None)
-    p_tool.add_argument("--format", choices=["md", "json"], default="md")
+    p_tool.add_argument("--format", choices=["md", "json", "sarif"], default="md")
     p_tool.add_argument("--raw", action="store_true", help="print raw JSON result payload")
 
     p_diff = sub.add_parser("diff", help="diff two artifacts (baseline vs current)")
     p_diff.add_argument("path_a")
     p_diff.add_argument("path_b")
-    p_diff.add_argument("--format", choices=["md", "json"], default="md")
+    p_diff.add_argument("--format", choices=["md", "json", "sarif"], default="md")
     p_diff.add_argument("--deep", action="store_true")
+
+    p_ci = sub.add_parser("ci", help="CI gate: scan and exit non-zero at or above --fail-on")
+    p_ci.add_argument("path")
+    p_ci.add_argument("--fail-on", choices=["critical", "high", "medium", "low", "info"], default="high")
+    p_ci.add_argument("--format", choices=["md", "json", "sarif"], default="md")
+    p_ci.add_argument("--out", default=None)
+    p_ci.add_argument("--tools", default=None)
+    p_ci.add_argument("--no-network", action="store_true")
+    p_ci.add_argument("--deep", action="store_true")
 
     p_plan = sub.add_parser("plan", help="show the audit plan for a target")
     p_plan.add_argument("path")
@@ -117,6 +126,31 @@ def main(argv: list[str] | None = None) -> int:
         payload = call_tool("diff_artifacts", {"path_a": args.path_a, "path_b": args.path_b,
                                                "deep": bool(args.deep)})
         return _emit(payload, args.format, None)
+    if args.command == "ci":
+        tool_args: dict = {"path": args.path, "fail_on": args.fail_on,
+                           "network": not args.no_network, "deep": bool(args.deep)}
+        if args.tools:
+            tool_args["tools"] = [t.strip() for t in args.tools.split(",") if t.strip()]
+        payload = call_tool("ci_scan", tool_args)
+        if not payload.get("ok"):
+            print(f"error: {payload.get('error')}", file=sys.stderr)
+            return 2
+        code = int(payload.get("exit_code", 0))
+        summary = render_summary_line([_to_finding(d) for d in payload.get("findings", [])])
+        if args.format == "md":
+            text = render_markdown([_to_finding(d) for d in payload.get("findings", [])], payload.get("meta", {}))
+            text += f"\n{summary}\nCI gate (fail_on={args.fail_on}): {'FAIL' if code else 'PASS'}\n"
+        elif args.format == "sarif":
+            text = render_sarif([_to_finding(d) for d in payload.get("findings", [])], payload.get("meta", {}))
+        else:
+            text = json.dumps(payload, indent=2, default=str)
+        if args.out:
+            with open(args.out, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            print(f"wrote {args.out} ({summary})")
+        else:
+            print(text)
+        return code
     if args.command == "plan":
         return _print_json(call_tool("plan", {"path": args.path,
                                               "network": not args.no_network,
@@ -172,6 +206,9 @@ def _emit(payload: dict, fmt: str, out: str | None) -> int:
         return 1
     if fmt == "json":
         text = json.dumps(payload, indent=2, default=str)
+    elif fmt == "sarif":
+        findings = [_to_finding(d) for d in payload.get("findings", [])]
+        text = render_sarif(findings, payload.get("meta", {}))
     else:
         findings = [_to_finding(d) for d in payload.get("findings", [])]
         text = render_markdown(findings, payload.get("meta", {}))

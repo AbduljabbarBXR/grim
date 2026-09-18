@@ -14,8 +14,14 @@ from typing import Any
 from .. import __version__
 from ..tools import call_tool, tool_catalog
 
-PROTOCOL_VERSION = "2024-11-05"
+PROTOCOL_VERSION = "2025-06-18"
 SERVER_INFO = {"name": "grim", "version": __version__}
+INSTRUCTIONS = (
+    "GRIM audits code, dependencies, exposure, secrets, and active compromise. Start with "
+    "detect_stack or plan, then run scan (one-shot) or individual tools. Findings include "
+    "severity, confidence, evidence, remediation, and MITRE ATT&CK tags. If meta.truncated "
+    "is true, results are incomplete: raise the relevant GRIM_MAX_* limit and re-run."
+)
 
 
 def run_server() -> None:
@@ -54,6 +60,7 @@ def _handle(msg: dict[str, Any]) -> None:
                 "protocolVersion": requested if requested else PROTOCOL_VERSION,
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": SERVER_INFO,
+                "instructions": INSTRUCTIONS,
             }
         elif method == "ping":
             result = {}

@@ -92,6 +92,85 @@ def render_summary_line(findings: Iterable[Finding]) -> str:
     )
 
 
+def render_sarif(findings: Iterable[Finding], meta: dict[str, Any] | None = None) -> str:
+    """SARIF 2.1.0 for CI/code-scanning integrations."""
+    findings = list(findings)
+    meta = meta or {}
+
+    def level(sev: str) -> str:
+        if sev in ("critical", "high"):
+            return "error"
+        if sev == "medium":
+            return "warning"
+        return "note"
+
+    rules: dict[str, dict[str, Any]] = {}
+    results: list[dict[str, Any]] = []
+    for f in findings:
+        rule_id = f.category or f.engine or "GRIM"
+        if rule_id not in rules:
+            rules[rule_id] = {
+                "id": rule_id,
+                "name": rule_id,
+                "shortDescription": {"text": f.category or "GRIM finding"},
+                "fullDescription": {"text": f.description or f.title},
+                "help": {"text": f.remediation or ""},
+                "properties": {
+                    "tags": sorted(set(f.tags + f.mitre)),
+                    "security-severity": _security_severity(f.severity),
+                },
+            }
+        loc: dict[str, Any] = {}
+        file_uri = f.location.get("file") or f.location.get("url") or ""
+        if file_uri:
+            loc = {
+                "physicalLocation": {
+                    "artifactLocation": {"uri": str(file_uri)},
+                }
+            }
+            if f.location.get("line"):
+                loc["physicalLocation"]["region"] = {"startLine": int(f.location["line"])}
+        result: dict[str, Any] = {
+            "ruleId": rule_id,
+            "level": level(f.severity),
+            "message": {"text": f"{f.title}: {f.description}".strip(": ")},
+            "properties": {
+                "confidence": f.confidence,
+                "engine": f.engine,
+                "tags": sorted(set(f.tags + f.mitre)),
+            },
+        }
+        if loc:
+            result["locations"] = [loc]
+        if f.remediation:
+            result["fixes"] = [{"description": {"text": f.remediation}}]
+        results.append(result)
+
+    sarif = {
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [
+            {
+                "tool": {
+                    "driver": {
+                        "name": "GRIM",
+                        "version": _version(),
+                        "informationUri": "https://github.com/AbduljabbarBXR/grim",
+                        "rules": list(rules.values()),
+                    }
+                },
+                "results": results,
+                "properties": {"meta": {k: v for k, v in meta.items() if isinstance(v, (str, int, float, bool))}},
+            }
+        ],
+    }
+    return json.dumps(sarif, indent=2, default=str)
+
+
+def _security_severity(sev: str) -> str:
+    return {"critical": "9.0", "high": "7.5", "medium": "5.0", "low": "2.0", "info": "0.0"}.get(sev, "0.0")
+
+
 def _version() -> str:
     from .. import __version__
 

@@ -8,9 +8,9 @@ from . import sbom as _sbom
 from .core import ledger as _ledger
 from .core.attack import enrich
 from .core.detector import detect_stack
-from .core.findings import Finding, make_id, rank, summarize
+from .core.findings import SEVERITY_ORDER, Finding, make_id, rank, summarize
 from .core.planner import build_plan
-from .core.report import render_json, render_markdown
+from .core.report import render_json, render_markdown, render_sarif
 from .engines.codepatterns import scan_code
 from .engines.deps import audit_deps
 from .engines.diffscan import diff_artifacts
@@ -186,6 +186,8 @@ def _tool_report(args: dict) -> dict:
     meta = args.get("meta") or {}
     if fmt == "json":
         text = render_json(findings, meta)
+    elif fmt == "sarif":
+        text = render_sarif(findings, meta)
     else:
         text = render_markdown(findings, meta)
     return {"ok": True, "format": fmt, "report": text}
@@ -248,6 +250,28 @@ def _tool_scan(args: dict) -> dict:
 
 def _has_manifest(detect: dict) -> bool:
     return any(s.get("manifest") for s in detect.get("stacks", []))
+
+
+def _tool_ci_scan(args: dict) -> dict:
+    """CI gate: run a full scan and return an exit code based on a severity threshold."""
+    fail_on = (args.get("fail_on") or "high").lower()
+    if fail_on not in SEVERITY_ORDER:
+        return {"ok": False, "error": f"invalid fail_on: {fail_on}"}
+    payload = _tool_scan(
+        {
+            "path": args["path"],
+            "tools": args.get("tools"),
+            "network": bool(args.get("network", True)),
+            "deep": bool(args.get("deep")),
+        }
+    )
+    threshold = SEVERITY_ORDER[fail_on]
+    counts = payload.get("summary", {}).get("by_severity", {})
+    failing = sum(n for sev, n in counts.items() if SEVERITY_ORDER.get(sev, 0) >= threshold)
+    payload["fail_on"] = fail_on
+    payload["failing"] = failing
+    payload["exit_code"] = 1 if failing else 0
+    return payload
 
 
 def _finding_from_dict(d: dict) -> Finding:
@@ -424,6 +448,24 @@ TOOLS: dict[str, dict[str, Any]] = {
             ["path"],
         ),
         "handler": _tool_scan,
+    },
+    "ci_scan": {
+        "description": "CI gate: run a full scan and return an exit code (1 when findings at or above the fail_on severity exist). Pair with SARIF output for pipelines.",
+        "schema": _schema(
+            {
+                **PATH_PROP,
+                "fail_on": {
+                    "type": "string",
+                    "enum": ["critical", "high", "medium", "low", "info"],
+                    "description": "Severity threshold that fails the build (default high)",
+                },
+                "tools": {"type": "array", "items": {"type": "string"}, "description": "Subset: exposure, secrets, code, deps, iocs"},
+                "network": {"type": "boolean", "description": "Allow dependency CVE lookup (default true)"},
+                "deep": {"type": "boolean", "description": "Nested archives + IoC hash matching"},
+            },
+            ["path"],
+        ),
+        "handler": _tool_ci_scan,
     },
 }
 

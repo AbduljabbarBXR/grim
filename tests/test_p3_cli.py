@@ -64,7 +64,7 @@ def main() -> int:
 
 def _test_cli() -> None:
     r = grim("version")
-    check("cli version", r.returncode == 0 and "grim 0.2" in r.stdout)
+    check("cli version", r.returncode == 0 and "grim 0.3" in r.stdout)
 
     r = grim("list")
     check("cli list shows v2 tools", r.returncode == 0 and "sbom" in r.stdout and "ledger" in r.stdout)
