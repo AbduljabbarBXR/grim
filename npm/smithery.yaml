@@ -1,0 +1,12 @@
+name: grim-mcp
+description: Security audit for AI agents. Finds code, dependency, exposure, secrets, and active-compromise gaps across any stack, with drift detection and SBOM.
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties: {}
+  commandFunction: |-
+    (config) => ({
+      command: 'npx',
+      args: ['-y', 'grim-mcp']
+    })

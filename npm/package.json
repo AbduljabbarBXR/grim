@@ -1,0 +1,42 @@
+{
+  "name": "grim-mcp",
+  "version": "0.2.0",
+  "description": "Security audit for AI agents. Finds code, dependency, exposure, secrets, and active-compromise gaps across any stack, with drift detection and SBOM.",
+  "type": "module",
+  "bin": {
+    "grim-mcp": "src/index.js"
+  },
+  "files": [
+    "src",
+    "python",
+    "README.md"
+  ],
+  "scripts": {
+    "sync": "node scripts/sync-python.mjs",
+    "prepack": "node scripts/sync-python.mjs"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "security",
+    "sast",
+    "malware",
+    "webshell",
+    "secrets",
+    "sbom",
+    "osv",
+    "drift",
+    "agents",
+    "grim"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "os": [
+    "linux",
+    "darwin",
+    "win32"
+  ],
+  "license": "MIT",
+  "mcpName": "io.github.AbduljabbarBXR/grim-mcp"
+}

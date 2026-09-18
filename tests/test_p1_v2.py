@@ -89,6 +89,19 @@ def main():
         (sec / "b64.py").write_text(f"data = '{blob}'\n")
         s2 = scan_secrets(str(sec))
         check("encoded detector fires", any("encoded" in f.tags for f in s2))
+
+        # entropy must not flag lockfiles, data, docs, or bundled text
+        noisy = "AbCdEf0123456789XyZ0123456789QqWwEeRrTtYy"
+        (sec / "package-lock.json").write_text('{"integrity": "sha512-AA' + noisy + '=="}')
+        (sec / "notes.md").write_text(f"sample token {noisy} in prose\n")
+        (sec / "page.html").write_text(f"<div data-x=\"{noisy}\"></div>\n")
+        s3 = scan_secrets(str(sec))
+        noisy_hits = [
+            f for f in s3
+            if "entropy" in f.tags
+            and f.location.get("file", "").endswith(("package-lock.json", "notes.md", "page.html"))
+        ]
+        check("entropy skips lockfiles/data/docs", not noisy_hits)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print(f"\nP1: {TOTAL - FAIL}/{TOTAL} passed")

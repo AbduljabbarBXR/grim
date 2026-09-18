@@ -205,19 +205,46 @@ def _entropy(s: str) -> float:
     return -sum((c / n) * math.log2(c / n) for c in counts.values())
 
 
-HIGH_ENTROPY_CANDIDATE = re.compile(r"[\x21-\x7E]{20,}")
+HIGH_ENTROPY_CANDIDATE = re.compile(r"[A-Za-z0-9_\-]{20,}")
+
+# Entropy scanning is only meaningful for source/config text. Data, docs, generated
+# bundles and lockfiles are full of high-entropy strings (hashes, uuids, base64) that
+# are not credentials, so skip them. Known secret patterns still run on every file.
+ENTROPY_SKIP_NAMES = {
+    "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml",
+    "composer.lock", "go.sum", "cargo.lock", "poetry.lock", "pipfile.lock",
+    "gemfile.lock", "pubspec.lock", "packages.lock.json",
+}
+ENTROPY_SKIP_EXTS = {
+    ".map", ".min.js", ".min.css", ".md", ".markdown", ".rst", ".txt", ".log",
+    ".csv", ".tsv", ".svg", ".html", ".htm", ".lock", ".sum", ".json", ".snap",
+}
+
+
+def _entropy_enabled(fp: Path) -> bool:
+    name = fp.name.lower()
+    if name in ENTROPY_SKIP_NAMES:
+        return False
+    if any(name.endswith(ext) for ext in ENTROPY_SKIP_EXTS):
+        return False
+    return True
 
 
 def _scan_entropy(text: str, fp: Path) -> list[Finding]:
+    if not _entropy_enabled(fp):
+        return []
     out: list[Finding] = []
     for m in HIGH_ENTROPY_CANDIDATE.finditer(text):
         token = m.group(0)
-        if _entropy(token) < 4.2:
+        if _entropy(token) < 4.3:
             continue
-        if not any(c.isdigit() for c in token) or not any(c.isalpha() for c in token):
+        # must look like a generated secret: mixed case plus digits
+        if not (any(c.islower() for c in token) and any(c.isupper() for c in token)):
             continue
-        # skip obvious non-secrets: hex colors, hashes already covered by patterns, UUIDs
-        if re.fullmatch(r"[0-9a-fA-F]{20,}", token):
+        if not any(c.isdigit() for c in token):
+            continue
+        # pure hex is a hash, not a credential (and hashes are handled elsewhere)
+        if re.fullmatch(r"[0-9a-fA-F]+", token):
             continue
         out.append(
             Finding(
@@ -235,7 +262,7 @@ def _scan_entropy(text: str, fp: Path) -> list[Finding]:
                 tags=["secrets", "entropy"],
             )
         )
-        if len(out) > 20:
+        if len(out) >= 8:
             break
     return out
 

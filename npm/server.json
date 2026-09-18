@@ -1,0 +1,17 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.AbduljabbarBXR/grim-mcp",
+  "title": "grim-mcp",
+  "description": "Security audit for AI agents: code, deps, exposure, secrets, drift, SBOM, and IoC.",
+  "version": "0.2.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "grim-mcp",
+      "version": "0.2.0",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

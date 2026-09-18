@@ -8,7 +8,7 @@
 **Status: v0.2.0.** v1 validated against a real compromise; v2 adds the planner, SBOM,
 MITRE ATT&CK tagging, an IoC hash feed, a persistent findings ledger, nested-archive
 scanning, a delta cache, and parallel scanning. Zero runtime dependencies (Python stdlib
-only), runs on Linux/macOS/Windows and Termux. 116 tests passing across Python 3.10–3.13.
+only), runs on Linux/macOS/Windows and Termux. 117 tests passing across Python 3.10–3.13.
 
 ---
 
@@ -37,7 +37,33 @@ python -m build              # sdist + wheel
 CI runs the full suite on Python 3.10, 3.11, 3.12, and 3.13, plus `ruff` and a
 build/install smoke test (`.github/workflows/ci.yml`).
 
+### Install from npm (MCP launcher)
+
+`grim-mcp` bundles the Python engine and runs it as a stdio MCP server, so no manual
+path setup is needed (requires Node 18+ and Python 3.10+):
+
+```bash
+npx -y grim-mcp            # MCP server on stdio
+npx -y grim-mcp version
+npx -y grim-mcp list
+```
+
 ### Use as MCP server in opencode
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "grim": {
+      "type": "local",
+      "command": ["npx", "-y", "grim-mcp"],
+      "enabled": true
+    }
+  }
+}
+```
+
+Or point directly at a local checkout:
 
 ```json
 {
@@ -426,6 +452,7 @@ grim/
 │   ├── engines/               # exposure, secrets, codepatterns, flow, deps, diffscan
 │   ├── feeds/                 # IoC store + remote feed sync
 │   └── mcp/                   # dependency-free stdio MCP server
+├── npm/                       # grim-mcp npm launcher (bundles the Python engine)
 └── tests/
     ├── run_all.py             # stdlib test runner (CI entry point)
     ├── test_tools.py          # v1 regression
