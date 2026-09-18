@@ -42,7 +42,11 @@ EXEC_EXT = {
     ".sh": "shell", ".bash": "shell",
     ".pl": "perl", ".py": "python", ".cgi": "cgi", ".rb": "ruby",
 }
-SKIP_DIRS = {".git", "node_modules", "vendor", ".cache", ".npm", ".trash", "ea-php-cli"}
+SKIP_DIRS = {".git", "node_modules", ".cache", ".npm", ".trash", "ea-php-cli"}
+SOURCE_SEGMENTS = {
+    "vendor", "node_modules", ".git", "resources", "src", "tests", "test",
+    "database", "migrations", "routes", "config", "bootstrap",
+}
 
 IMAGE_MAGICS = (b"GIF87a", b"GIF89a", b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n", b"RIFF", b"BM", b"II*\x00", b"MM\x00*")
 ELF_MAGIC = b"\x7fELF"
@@ -59,7 +63,7 @@ WEBSHELL_PATTERNS: list[tuple[re.Pattern, str, str, str]] = [
      "Password-gated command form", "Interactive webshell control panel"),
     (re.compile(rb"\bsetsid\b"), "critical",
      "Detached process execution (stager)", "Downloads/executes payloads detached from the parent process"),
-    (re.compile(rb"(uguu\.se|transfer\.sh|anonfiles|catbox\.moe)"), "high",
+    (re.compile(rb"(uguu\.se|transfer\.sh(?![a-z0-9])|anonfiles|catbox\.moe)"), "high",
      "Payload host reference", "Free file hosts frequently used for malware staging"),
     (re.compile(rb"curl[^\n]{0,160}\|\s*(sudo\s+)?(ba|z)?sh", re.I), "critical",
      "Piped shell download", "curl | sh style remote execution"),
@@ -268,6 +272,8 @@ def _check_by_name(entry: Entry, out: list[Finding]) -> None:
     if not _in_web_path(rel):
         return
     segs = [s.lower() for s in rel.split("/")[:-1]]
+    if any(s in SOURCE_SEGMENTS for s in segs):
+        return
     in_upload = any(s in UPLOAD_SEGMENTS for s in segs)
 
     parent_is_web_root = bool(segs) and segs[-1] in WEB_SEGMENTS and name in SAFE_ROOT_FILES
@@ -282,7 +288,7 @@ def _check_by_name(entry: Entry, out: list[Finding]) -> None:
         elif ext in {".sh", ".bash"}:
             sev, conf = "critical", 0.9
         else:
-            sev, conf = "high", 0.8
+            return
         out.append(
             _mk(sev, "CWE-434", "A04:2021",
                 f"Executable {kind} file in web-served directory",
@@ -334,8 +340,10 @@ def _check_by_name(entry: Entry, out: list[Finding]) -> None:
 
 def _check_content(entry: Entry, data: bytes, out: list[Finding]) -> None:
     head = data[:MAGIC_LIMIT]
+    segs = [s.lower() for s in entry.path.split("/")[:-1]]
+    in_source = any(s in SOURCE_SEGMENTS for s in segs)
 
-    if head.startswith(ELF_MAGIC) or head.startswith(PE_MAGIC):
+    if not in_source and (head.startswith(ELF_MAGIC) or head.startswith(PE_MAGIC)):
         out.append(
             _mk("critical", "CWE-506", "A08:2021",
                 "Native executable in web-served directory",
@@ -347,8 +355,9 @@ def _check_content(entry: Entry, data: bytes, out: list[Finding]) -> None:
         return
 
     images = head.startswith(IMAGE_MAGICS)
-    if images and (b"<?php" in data or b"<?=" in data):
-        idx = data.find(b"<?php") if b"<?php" in data else data.find(b"<?=")
+    short_tag = re.search(rb"<\?=\s*(\$|eval\b|system\b|assert\b|base64|shell_exec\b|passthru\b|preg_replace\b)", data)
+    if images and (b"<?php" in data or short_tag):
+        idx = data.find(b"<?php") if b"<?php" in data else short_tag.start()
         out.append(
             _mk("critical", "CWE-506", "A08:2021",
                 "Polyglot file: image header with embedded PHP",

@@ -161,6 +161,26 @@ def test_diff_wrapper() -> None:
         check("wrapper normalized: counts sane", stats["added"] >= 5 and stats["removed"] == 0, str(stats))
 
 
+def test_source_dirs() -> None:
+    print("source dirs not false-positive flagged")
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        make_fixture(root, compromised=False)
+        vendor = root / "vendor" / "maatwebsite" / "excel" / "src" / "Files"
+        vendor.mkdir(parents=True, exist_ok=True)
+        (vendor / "Disk.php").write_text("<?php class Disk { public function x() {} }")
+        views = root / "resources" / "views" / "seller" / "uploads"
+        views.mkdir(parents=True, exist_ok=True)
+        (views / "create.blade.php").write_text("<div>hi</div><?php echo e($x); ?>")
+        findings = audit_exposure(str(root))
+        bad = [f for f in findings if "Executable" in f.title and ("/vendor/" in f.location["file"] or "resources/" in f.location["file"])]
+        check("no name flags in vendor/resources", not bad, str([f.location["file"] for f in bad]))
+        (vendor / "shell.php").write_text("<?php eval($_POST['x']);")
+        findings2 = audit_exposure(str(root))
+        hit = [f for f in findings2 if f.severity == "critical" and f.location["file"].endswith("vendor/maatwebsite/excel/src/Files/shell.php")]
+        check("webshell content inside vendor still caught", bool(hit), str([f.title for f in findings2]))
+
+
 def test_clean_scan() -> None:
     print("clean fixture (no critical false positives)")
     with tempfile.TemporaryDirectory() as td:
@@ -257,6 +277,7 @@ if __name__ == "__main__":
     test_secrets()
     test_diff()
     test_diff_wrapper()
+    test_source_dirs()
     test_clean_scan()
     test_report()
     test_tools_api()
