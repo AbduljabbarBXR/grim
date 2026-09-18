@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import tarfile
+import tempfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +26,8 @@ MAX_CONTENT_READS = 60_000
 MAX_FINDINGS = 3_000
 READ_LIMIT = 131_072  # 128 KB prefix per file for content checks
 MAGIC_LIMIT = 8192
+NESTED_MAX_DEPTH = 3
+NESTED_MAX_BYTES = 512 * 1024 * 1024
 
 WEB_SEGMENTS = {
     "public", "public_html", "www", "htdocs", "web", "static", "assets",
@@ -201,19 +205,92 @@ class ArchiveSource(Source):
                     yield entry, reader
 
 
-def open_source(path: str) -> Source:
+def open_source(path: str, nested: bool = False) -> Source:
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(path)
     if p.is_dir():
         return DirSource(path)
     if _archive_kind(str(path)):
+        if nested:
+            return DeepArchiveSource(path)
         return ArchiveSource(path)
     raise ValueError(f"not a directory or archive: {path}")
 
 
-def audit_exposure(path: str) -> list[Finding]:
-    source = open_source(path)
+class DeepArchiveSource(Source):
+    """Archive source that extracts to an isolated temp dir and descends into nested
+    archives (zip/tar) up to a depth and byte budget. Read-only w.r.t. the original."""
+
+    def __init__(
+        self,
+        archive: str,
+        max_depth: int = NESTED_MAX_DEPTH,
+        max_bytes: int = NESTED_MAX_BYTES,
+    ):
+        self.archive = archive
+        self.label = str(archive)
+        self._tmp = tempfile.mkdtemp(prefix="grim-arc-")
+        self._root = Path(self._tmp)
+        self._budget = max_bytes
+        self._max_depth = max_depth
+        try:
+            _extract_recursive(archive, self._root, 0, self)
+        except Exception:
+            pass
+
+    def iter_items(self) -> Iterator[tuple[Entry, Callable[[int], bytes]]]:
+        yield from DirSource(str(self._root)).iter_items()
+
+    def close(self) -> None:
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+
+def _safe_rel(name: str) -> str | None:
+    """Neutralize path traversal and absolute/drive paths from archive members."""
+    parts = [p for p in name.replace("\\", "/").split("/") if p not in ("", ".", "..")]
+    if not parts:
+        return None
+    return "/".join(parts)
+
+
+def _extract_recursive(archive: str, dest: Path, depth: int, state: DeepArchiveSource) -> None:
+    src = ArchiveSource(archive)
+    count = 0
+    try:
+        for entry, reader in src.iter_items():
+            if entry.is_dir or entry.is_link or entry.size < 0:
+                continue
+            if state._budget <= 0 or count >= MAX_ENTRIES:
+                break
+            rel = _safe_rel(entry.path)
+            if rel is None:
+                continue
+            target = dest / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            data = reader(entry.size + 1) if entry.size > 0 else b""
+            state._budget -= len(data)
+            if state._budget < 0:
+                break
+            try:
+                target.write_bytes(data)
+            except OSError:
+                continue
+            count += 1
+            if depth < state._max_depth and _archive_kind(rel):
+                sub = target.parent / (target.name + ".extracted")
+                sub.mkdir(parents=True, exist_ok=True)
+                _extract_recursive(str(target), sub, depth + 1, state)
+                try:
+                    target.unlink()
+                except OSError:
+                    pass
+    finally:
+        src.close()
+
+
+def audit_exposure(path: str, deep: bool = False) -> list[Finding]:
+    source = open_source(path, nested=deep)
     findings: list[Finding] = []
     count = 0
     reads = 0

@@ -32,6 +32,7 @@ class Finding:
     engine: str = "grim"
     first_seen: str = field(default_factory=_now)
     tags: list[str] = field(default_factory=list)
+    mitre: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)

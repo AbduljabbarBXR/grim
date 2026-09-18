@@ -41,12 +41,12 @@ def _entry_hash(entry: Entry, reader) -> str:
     return hashlib.sha256(f"{entry.size}|".encode() + data).hexdigest()[:24]
 
 
-def diff_artifacts(path_a: str, path_b: str, classify_limit: int = MAX_CLASSIFY) -> tuple[list[Finding], dict]:
-    source_a = open_source(path_a)
+def diff_artifacts(path_a: str, path_b: str, classify_limit: int = MAX_CLASSIFY, deep: bool = False) -> tuple[list[Finding], dict]:
+    source_a = open_source(path_a, nested=deep)
     manifest_a_raw = _manifest(source_a)
     source_a.close()
 
-    source_b = open_source(path_b)
+    source_b = open_source(path_b, nested=deep)
     manifest_b_raw = _manifest(source_b)
 
     root_a = _common_root(manifest_a_raw)
@@ -163,8 +163,8 @@ def diff_artifacts(path_a: str, path_b: str, classify_limit: int = MAX_CLASSIFY)
     return findings, stats
 
 
-def build_manifest(path: str) -> dict:
-    source = open_source(path)
+def build_manifest(path: str, deep: bool = False) -> dict:
+    source = open_source(path, nested=deep)
     try:
         return _manifest(source)
     finally:

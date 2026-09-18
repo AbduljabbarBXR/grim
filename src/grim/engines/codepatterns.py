@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import fields as dataclass_fields
 from pathlib import Path
 
 from ..core.findings import Finding, make_id
@@ -12,6 +17,11 @@ from .flow import scan_flow
 MAX_FILE_BYTES = 1024 * 1024
 MAX_FILES = 20000
 MAX_FINDINGS = 800
+
+CACHE_DIR = Path(os.environ.get("GRIM_CACHE", Path.home() / ".cache" / "grim")) / "code"
+CACHE_MAX_ENTRIES = 50000
+_FINDING_FIELDS = {f.name for f in dataclass_fields(Finding)}
+_FINDING_FIELDS.discard("severity_rank")
 
 SKIP_DIRS = {
     ".git", "node_modules", "vendor", ".venv", "venv", "__pycache__",
@@ -408,25 +418,105 @@ IP_URL = re.compile(r"https?://(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?::\d+)?")
 PRIVATE_IP = re.compile(r"^(10\.|127\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|0\.|169\.254\.)")
 
 
-def scan_code(path: str, languages: list[str] | None = None, max_files: int = MAX_FILES) -> list[Finding]:
+def _cache_version() -> str:
+    from .. import __version__
+
+    return f"{__version__}:{len(RULES)}"
+
+
+def _cache_path() -> Path:
+    return CACHE_DIR / "findings.json"
+
+
+def _load_cache() -> dict:
+    p = _cache_path()
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_cache(cache: dict) -> None:
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        if len(cache) > CACHE_MAX_ENTRIES:
+            cache = dict(list(cache.items())[-CACHE_MAX_ENTRIES:])
+        _cache_path().write_text(json.dumps(cache), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _hash_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()
+
+
+def _from_dicts(dicts: list[dict]) -> list[Finding]:
+    out: list[Finding] = []
+    for d in dicts:
+        try:
+            out.append(Finding(**{k: v for k, v in d.items() if k in _FINDING_FIELDS}))
+        except TypeError:
+            continue
+    return out
+
+
+def scan_code(
+    path: str,
+    languages: list[str] | None = None,
+    max_files: int = MAX_FILES,
+    workers: int | None = None,
+    use_cache: bool = True,
+) -> list[Finding]:
     p = Path(path)
-    findings: list[Finding] = []
     if not p.exists():
         raise FileNotFoundError(path)
     files = [p] if p.is_file() else _walk(p, max_files)
     lang_filter = set(languages) if languages else None
+    files = [f for f in files if _lang_of(f) is not None and (not lang_filter or _lang_of(f) in lang_filter)]
+    files.sort(key=lambda x: str(x))
 
-    for fp in files:
-        if len(findings) >= MAX_FINDINGS:
-            break
+    if workers is None:
+        workers = min(8, os.cpu_count() or 1)
+
+    cache = _load_cache() if (use_cache and files) else {}
+    lock = threading.Lock()
+    version = _cache_version()
+
+    def task(fp: Path) -> list[Finding]:
         lang = _lang_of(fp)
         if lang is None:
-            continue
-        if lang_filter and lang not in lang_filter:
-            continue
-        findings.extend(_scan_file(fp, lang))
-        if fp.suffix == ".php" or fp.name.endswith(".blade.php"):
-            pass
+            return []
+        text = _read_text(fp)
+        if text is None:
+            return []
+        key = ""
+        if use_cache:
+            key = f"{version}:{_hash_text(text)}"
+            with lock:
+                cached = cache.get(key)
+            if cached is not None:
+                return _from_dicts(cached)
+        result = _scan_text(text, fp, lang)
+        if use_cache and key:
+            payload = [f.to_dict() for f in result]
+            with lock:
+                cache[key] = payload
+        return result
+
+    findings: list[Finding] = []
+    if workers > 1 and len(files) > 1:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for result in pool.map(task, files):
+                findings.extend(result)
+    else:
+        for fp in files:
+            findings.extend(task(fp))
+
+    if use_cache and files:
+        _save_cache(cache)
 
     # lightweight taint/flow pass on top of the pattern rules
     findings.extend(scan_flow(path, languages=languages, max_files=max_files))
@@ -453,14 +543,24 @@ def _lang_of(fp: Path) -> str | None:
     return EXT_LANG.get(fp.suffix.lower())
 
 
-def _scan_file(fp: Path, lang: str) -> list[Finding]:
-    out: list[Finding] = []
+def _read_text(fp: Path) -> str | None:
     try:
         if fp.stat().st_size > MAX_FILE_BYTES:
-            return out
-        text = fp.read_text(encoding="utf-8", errors="ignore")
+            return None
+        return fp.read_text(encoding="utf-8", errors="ignore")
     except OSError:
-        return out
+        return None
+
+
+def _scan_file(fp: Path, lang: str) -> list[Finding]:
+    text = _read_text(fp)
+    if text is None:
+        return []
+    return _scan_text(text, fp, lang)
+
+
+def _scan_text(text: str, fp: Path, lang: str) -> list[Finding]:
+    out: list[Finding] = []
 
     for rid, pat, sev, title, desc, fix, langs in RULES:
         if lang not in langs:

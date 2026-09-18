@@ -4,9 +4,14 @@ Usage:
   grim version
   grim mcp                                  # run MCP server (stdio)
   grim list                                 # list tools
-  grim scan PATH [--format md|json] [--out FILE] [--tools ...] [--no-network]
+  grim scan PATH [--format md|json] [--out FILE] [--tools ...] [--no-network] [--deep]
   grim tool NAME --path P [--path-b P2] [--format md|json]
-  grim diff A B [--format md|json]
+  grim diff A B [--format md|json] [--deep]
+  grim plan PATH [--no-network] [--deep]
+  grim sbom PATH [--format cyclonedx|spdx] [--out FILE]
+  grim ledger PATH [--ledger FILE] [--tools ...]
+  grim iocs PATH [--deep]
+  grim update-feeds [--url URL]
 """
 
 from __future__ import annotations
@@ -32,8 +37,9 @@ def main(argv: list[str] | None = None) -> int:
     p_scan.add_argument("path")
     p_scan.add_argument("--format", choices=["md", "json"], default="md")
     p_scan.add_argument("--out", default=None)
-    p_scan.add_argument("--tools", default=None, help="subset: exposure,secrets,code,deps")
+    p_scan.add_argument("--tools", default=None, help="subset: exposure,secrets,code,deps,iocs")
     p_scan.add_argument("--no-network", action="store_true")
+    p_scan.add_argument("--deep", action="store_true", help="nested archives + IoC hash matching")
 
     p_tool = sub.add_parser("tool", help="run a single tool")
     p_tool.add_argument("name")
@@ -47,6 +53,31 @@ def main(argv: list[str] | None = None) -> int:
     p_diff.add_argument("path_a")
     p_diff.add_argument("path_b")
     p_diff.add_argument("--format", choices=["md", "json"], default="md")
+    p_diff.add_argument("--deep", action="store_true")
+
+    p_plan = sub.add_parser("plan", help="show the audit plan for a target")
+    p_plan.add_argument("path")
+    p_plan.add_argument("--no-network", action="store_true")
+    p_plan.add_argument("--deep", action="store_true")
+
+    p_sbom = sub.add_parser("sbom", help="emit CycloneDX/SPDX SBOM")
+    p_sbom.add_argument("path")
+    p_sbom.add_argument("--format", choices=["cyclonedx", "spdx"], default="cyclonedx")
+    p_sbom.add_argument("--out", default=None)
+
+    p_ledger = sub.add_parser("ledger", help="merge a scan into the persistent findings ledger")
+    p_ledger.add_argument("path")
+    p_ledger.add_argument("--ledger", default=None)
+    p_ledger.add_argument("--tools", default=None)
+    p_ledger.add_argument("--deep", action="store_true")
+
+    p_iocs = sub.add_parser("iocs", help="match file hashes against the IoC store")
+    p_iocs.add_argument("path")
+    p_iocs.add_argument("--deep", action="store_true")
+
+    p_feeds = sub.add_parser("update-feeds", help="sync the IoC store from a feed URL")
+    p_feeds.add_argument("--url", default=None)
+    p_feeds.add_argument("--ioc-path", default=None)
 
     args = parser.parse_args(argv)
 
@@ -68,6 +99,8 @@ def main(argv: list[str] | None = None) -> int:
             tool_args["tools"] = [t.strip() for t in args.tools.split(",") if t.strip()]
         if args.no_network:
             tool_args["network"] = False
+        if args.deep:
+            tool_args["deep"] = True
         payload = call_tool("scan", tool_args)
         return _emit(payload, args.format, args.out)
     if args.command == "tool":
@@ -81,10 +114,46 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if payload.get("ok") else 1
         return _emit(payload, args.format, None)
     if args.command == "diff":
-        payload = call_tool("diff_artifacts", {"path_a": args.path_a, "path_b": args.path_b})
+        payload = call_tool("diff_artifacts", {"path_a": args.path_a, "path_b": args.path_b,
+                                               "deep": bool(args.deep)})
         return _emit(payload, args.format, None)
+    if args.command == "plan":
+        return _print_json(call_tool("plan", {"path": args.path,
+                                              "network": not args.no_network,
+                                              "deep": args.deep}))
+    if args.command == "sbom":
+        payload = call_tool("sbom", {"path": args.path, "format": args.format})
+        if not payload.get("ok"):
+            print(f"error: {payload.get('error')}", file=sys.stderr)
+            return 1
+        text = json.dumps(payload["bom"], indent=2, default=str)
+        if args.out:
+            with open(args.out, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            print(f"wrote {args.out} ({payload['component_count']} components)")
+        else:
+            print(text)
+        return 0
+    if args.command == "ledger":
+        tool_args: dict = {"path": args.path, "deep": bool(args.deep)}
+        if args.ledger:
+            tool_args["ledger_path"] = args.ledger
+        if args.tools:
+            tool_args["tools"] = [t.strip() for t in args.tools.split(",") if t.strip()]
+        return _print_json(call_tool("ledger", tool_args))
+    if args.command == "iocs":
+        payload = call_tool("scan_iocs", {"path": args.path, "deep": bool(args.deep)})
+        return _emit(payload, "md", None)
+    if args.command == "update-feeds":
+        tool_args = {"url": args.url, "ioc_path": args.ioc_path}
+        return _print_json(call_tool("update_feeds", {k: v for k, v in tool_args.items() if v}))
     parser.print_help()
     return 1
+
+
+def _print_json(payload: dict) -> int:
+    print(json.dumps(payload, indent=2, default=str))
+    return 0 if payload.get("ok") else 1
 
 
 def _build_tool_args(name: str, args: argparse.Namespace) -> dict:
@@ -136,6 +205,7 @@ def _to_finding(d: dict):
         engine=d.get("engine", "grim"),
         first_seen=d.get("first_seen", ""),
         tags=d.get("tags", []),
+        mitre=d.get("mitre", []),
     )
 
 

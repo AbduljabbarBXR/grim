@@ -5,8 +5,10 @@
 > Works on any stack. For AI-built apps and existing complex codebases. Point it at a folder,
 > a repo, or an authorized live URL, and get a prioritized, evidence-backed report with fixes.
 
-**Status: v1 implemented and validated against a real compromise.** Zero runtime dependencies
-(Python stdlib only), runs on Linux/macOS/Windows and Termux. 31 tests passing.
+**Status: v0.2.0.** v1 validated against a real compromise; v2 adds the planner, SBOM,
+MITRE ATT&CK tagging, an IoC hash feed, a persistent findings ledger, nested-archive
+scanning, a delta cache, and parallel scanning. Zero runtime dependencies (Python stdlib
+only), runs on Linux/macOS/Windows and Termux. 89 tests passing.
 
 ---
 
@@ -187,7 +189,7 @@ GRIM's coverage model. Every tool belongs to one or more:
 | `audit_exposure` | Web-exposed dangerous files in a tree/backup | `path` (dir, tar, zip) | built-in file-policy engine |
 | `report` | Unified prioritized report + fixes | `findings`, `format` | ranker + renderer |
 
-### v2
+### v2 planned (not yet shipped)
 
 | Tool | Purpose | Inputs | Engines |
 |---|---|---|---|
@@ -203,6 +205,20 @@ GRIM's coverage model. Every tool belongs to one or more:
 - `fix_plan` — turn findings into patch suggestions / PR-ready diffs
 - Node agent mode — long-running watchdog for live servers without root (PHP/shell cron
   companion that reports into GRIM)
+
+### v2 shipped (0.2.0)
+
+| Tool / feature | Purpose |
+|---|---|
+| `plan` | Ordered, explainable audit plan derived from the detected stack |
+| `sbom` | CycloneDX 1.5 / SPDX 2.3 bill of materials for resolved dependencies |
+| `scan_iocs` | Match file hashes against a known-bad IoC store (+ EICAR) |
+| `update_feeds` | Sync the IoC store from a remote JSON feed |
+| `ledger` | Persistent findings ledger: new / known / reopened / resolved across audits |
+| MITRE ATT&CK | Every finding auto-tagged with technique IDs (e.g. `T1505.003`) |
+| Nested archives | `deep=true` extracts zip/tar inside zip/tar with traversal and size guards |
+| Delta cache | SHA-256 keyed per-file result cache; unchanged files are not re-scanned |
+| Parallel scanning | Thread-pool SAST across files (`workers`) |
 
 ### Example call
 
@@ -334,8 +350,10 @@ deny:
 - Termux-friendly (no root dependencies for v1 tools)
 
 **Phase 2 — v2 tools**
-- `inventory_endpoints`, `check_live` (passive first), `malware_scan`, `watch`
-- Backups/archive scanning (tar/zip) for offline server audits
+- Shipped in 0.2.0: `plan`, `sbom` (CycloneDX/SPDX), `scan_iocs` + `update_feeds`,
+  `ledger`, MITRE ATT&CK tagging, nested-archive scanning, delta cache, parallel scanning
+- Multi-language SAST + lockfile coverage: Go, Rust, Java, Kotlin, C#, Ruby, Dart
+- Still planned: `inventory_endpoints`, `check_live` (passive first), `malware_scan`
 - SARIF export for CI
 
 **Phase 3 — platform**

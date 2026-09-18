@@ -68,6 +68,8 @@ def render_markdown(findings: Iterable[Finding], meta: dict[str, Any] | None = N
             lines.append(f"- **Fix:** {f.remediation}")
         if f.tags:
             lines.append(f"- **Tags:** {', '.join(f.tags)}")
+        if f.mitre:
+            lines.append(f"- **MITRE ATT&CK:** {', '.join(f.mitre)}")
         if f.references:
             lines.append("- **References:** " + ", ".join(f.references))
         lines.append("")
