@@ -7,6 +7,7 @@ from typing import Any, Callable
 from . import sbom as _sbom
 from .core import baseline as _baseline
 from .core import ledger as _ledger
+from .core import policy as _policy
 from .core.attack import enrich
 from .core.detector import detect_stack
 from .core.findings import SEVERITY_ORDER, Finding, make_id, rank, summarize
@@ -18,6 +19,8 @@ from .engines.deps import audit_deps
 from .engines.diffscan import diff_artifacts
 from .engines.endpoints import inventory_endpoints
 from .engines.exposure import audit_exposure
+from .engines.live import LiveError, check_live
+from .engines.malware import scan_malware
 from .engines.secrets import scan_secrets, scan_secrets_history
 from .engines.watch import save_baseline, watch_diff
 from .feeds import iocs as _iocs
@@ -119,6 +122,31 @@ def _tool_watch(args: dict) -> dict:
         return _findings_payload(findings, meta)
 
     return {"ok": False, "error": f"unknown action: {action}"}
+
+
+def _tool_malware_scan(args: dict) -> dict:
+    stats: dict = {}
+    findings, _ = scan_malware(args["path"], deep=bool(args.get("deep")), stats=stats)
+    return _findings_payload(findings, _meta("grim-malware", args["path"], stats))
+
+
+def _tool_check_live(args: dict) -> dict:
+    url = args.get("url")
+    if not url:
+        return {"ok": False, "error": "url is required"}
+    try:
+        scope = _policy.load(args.get("scope_path"), target=args.get("scope_dir"), inline=args.get("scope"))
+        stats: dict = {}
+        findings = check_live(
+            url,
+            scope,
+            active=bool(args.get("active")),
+            timeout=int(args.get("timeout", 10)),
+            stats=stats,
+        )
+    except (_policy.PolicyError, LiveError) as exc:
+        return {"ok": False, "error": str(exc)}
+    return _findings_payload(findings, _meta("grim-live", url, stats))
 
 
 def _tool_inventory_endpoints(args: dict) -> dict:
@@ -490,6 +518,32 @@ TOOLS: dict[str, dict[str, Any]] = {
         "description": "Enumerate application routes (Express, Laravel, Django, Go, Next.js, Astro) with method, auth middleware, input surface, and risk rank.",
         "schema": _schema({**PATH_PROP}, ["path"]),
         "handler": _tool_inventory_endpoints,
+    },
+    "check_live": {
+        "description": "Opt-in live checks for an authorized host: security headers, cookies, TLS, and (if the scope allows) allowlisted exposed paths. Requires a scope (file or inline).",
+        "schema": _schema(
+            {
+                "url": {"type": "string", "description": "Target URL or host (must be authorized by the scope)"},
+                "scope": {"type": "object", "description": "Inline scope object"},
+                "scope_path": {"type": "string", "description": "Path to grim.scope.json"},
+                "scope_dir": {"type": "string", "description": "Directory to search for grim.scope.json"},
+                "active": {"type": "boolean", "description": "Allow active probes (also requires scope target mode=active)"},
+                "timeout": {"type": "integer", "description": "Per-request timeout seconds (default 10)"},
+            },
+            ["url"],
+        ),
+        "handler": _tool_check_live,
+    },
+    "malware_scan": {
+        "description": "Malware scan: built-in webshell/polyglot/ELF heuristics and IoC hashes, plus optional ClamAV and YARA if installed.",
+        "schema": _schema(
+            {
+                **PATH_PROP,
+                "deep": {"type": "boolean", "description": "Descend into nested archives"},
+            },
+            ["path"],
+        ),
+        "handler": _tool_malware_scan,
     },
     "plan": {
         "description": "Build an ordered, explainable audit plan for a target: which tools to run and why, based on detected stack and inputs.",

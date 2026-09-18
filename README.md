@@ -7,10 +7,10 @@
 
 > MCP registry: `io.github.AbduljabbarBXR/grim-mcp` (mcp-name: io.github.AbduljabbarBXR/grim-mcp)
 
-**Status: v0.4.0.** v1 validated against a real compromise; v2 adds the planner, SBOM,
+**Status: v0.5.0.** v1 validated against a real compromise; v2 adds the planner, SBOM,
 MITRE ATT&CK tagging, an IoC hash feed, a persistent findings ledger, nested-archive
 scanning, a delta cache, and parallel scanning. Zero runtime dependencies (Python stdlib
-only), runs on Linux/macOS/Windows and Termux. 204 tests passing across Python 3.10–3.13.
+only), runs on Linux/macOS/Windows and Termux. 224 tests passing across Python 3.10–3.13.
 
 ---
 
@@ -40,6 +40,8 @@ grim watch /path/to/app --save                           # store a known-good ba
 grim watch /path/to/app                                  # diff current state vs baseline
 grim endpoints /path/to/app                              # route inventory + auth/input risk
 grim fix_plan /path/to/app                               # remediation steps + safe diffs
+grim malware /path/to/app                                # heuristics + IoC (+ ClamAV/YARA)
+grim check_live https://example.com --scope grim.scope.json          # authorized live checks
 grim update-feeds --url https://example.com/grim-feed.json   # sync rules + IoCs
 ```
 
@@ -249,19 +251,14 @@ GRIM's coverage model. Every tool belongs to one or more:
 | `audit_exposure` | Web-exposed dangerous files in a tree/backup | `path` (dir, tar, zip) | built-in file-policy engine |
 | `report` | Unified prioritized report + fixes | `findings`, `format` | ranker + renderer |
 
-### v2 planned (not yet shipped)
+### v2/v3 (shipped)
 
-| Tool | Purpose | Inputs | Engines |
-|---|---|---|---|
-| `inventory_endpoints` | Every route: method, auth middleware, input surface, risk rank | `path` | framework parsers (Laravel, Next/Astro, Express, Django, Go) |
-| `check_live` | Passive (default) / authorized active live checks | `url`, `scope` | nuclei (passive templates), custom HTTP/TLS/header checks |
-| `malware_scan` | Known malware, webshells, polyglots, ELF-in-webdir | `path` | ClamAV, YARA (community rules) |
-| `watch` | Baseline + drift detection between runs | `path`, `baseline` | hash manifests + semantic diff |
+All previously planned v2 tools are implemented: `inventory_endpoints`, `watch`,
+`check_live`, and `malware_scan`. See the shipped-features table below.
 
 ### v3
 
-- `update_feeds` — force-sync all rule/signature feeds and report versions
-- `fix_plan` — turn findings into patch suggestions / PR-ready diffs
+- `fix_plan` — turn findings into patch suggestions / PR-ready diffs (emits applyable diffs; PR creation pending)
 - Node agent mode — long-running watchdog for live servers without root (PHP/shell cron
   companion that reports into GRIM)
 
@@ -284,6 +281,8 @@ GRIM's coverage model. Every tool belongs to one or more:
 | `fix_plan` | Ordered remediation steps, with safe unified diffs (`git apply`-able) |
 | `inventory_endpoints` | Route inventory (Express, Laravel, Django, Go, Next.js, Astro) with auth/input/risk |
 | Rule feeds | `update_feeds` syncs SAST rule overlays + IoC hashes from a JSON feed |
+| `check_live` | Opt-in, scope-gated live checks: headers, cookies, TLS, allowlisted exposed paths |
+| `malware_scan` | Built-in heuristics + IoC, plus ClamAV/YARA when installed |
 
 ### Limits and truncation
 
@@ -314,6 +313,9 @@ truncated"), and prints a warning in Markdown reports — so partial results are
 | `GRIM_OSV_BUDGET_SECONDS` | 60 | total OSV network budget |
 | `GRIM_FEEDS_URL` | (unset) | rule + IoC feed URL for `update_feeds` |
 | `GRIM_RULES_CACHE` | `~/.cache/grim/rules.json` | synced rule overlay path |
+| `GRIM_CLAMAV` | (PATH) | ClamAV binary for `malware_scan` |
+| `GRIM_YARA` | (PATH) | YARA binary for `malware_scan` |
+| `GRIM_YARA_RULES` | (unset) | YARA rules file/dir for `malware_scan` |
 
 The delta cache (`~/.cache/grim/code/findings.json`) is content- and path-keyed, invalidated
 by a rules hash, and written atomically; identical files in different paths never share
@@ -414,24 +416,24 @@ rules file that can be hosted remotely and pulled by every installation.
 
 - **Default mode is read-only and local.** File scans never write; no network unless a live
   tool is invoked.
-- **Live checks require a scope file** (`grim.scope.yaml`):
+- **Live checks are opt-in and require a scope** (`grim.scope.json`, or an inline scope):
 
-```yaml
-authorization:
-  declared_by: "owner or authorized party"
-  reference: "contract/ticket id"
-targets:
-  - host: "example.com"
-    mode: passive        # passive | active
-    max_requests_per_minute: 30
-    paths_allowlist: ["/", "/api/health"]
-deny:
-  - "*/wp-admin/*"
+```json
+{
+  "authorization": { "declared_by": "owner or authorized party", "reference": "contract/ticket id" },
+  "targets": [
+    { "host": "example.com", "mode": "passive",
+      "max_requests_per_minute": 30, "paths_allowlist": ["/", "/api/health"] }
+  ],
+  "deny": ["*/wp-admin/*"]
+}
 ```
 
-- **No exploitation payloads, ever.** Active mode = safe probes (exposure checks, header/TLS
-  analysis), not weaponized attacks.
-- **Rate-limited, allowlisted, auditable.** Every live request logged with timestamp + target.
+- **Passive is the default.** `check_live` reads headers, cookies, and TLS. Active probes run
+  only when the scope target says `mode: active` *and* the exact path is in `paths_allowlist`;
+  denied patterns are never touched.
+- **No exploitation payloads, ever.** Active mode = safe exposure probes, not attacks.
+- **Rate-limited and allowlisted.** Requests are paced by `max_requests_per_minute`.
 - **Backups treated as evidence**: extraction is isolated and never modifies source archives.
 
 ---
@@ -457,7 +459,9 @@ deny:
 - Multi-language SAST + lockfile coverage: Go, Rust, Java, Kotlin, C#, Ruby, Dart
 - Shipped in 0.4.0: `watch` (baselines + drift), `fix_plan` (remediation + safe diffs),
   `inventory_endpoints`, remote rule feeds, bounded per-occurrence rules, cross-platform CI
-- Still planned: `check_live` (passive first), `malware_scan` (optional ClamAV/YARA)
+- Shipped in 0.5.0: `check_live` (opt-in, scope-gated live checks) and `malware_scan`
+  (built-in heuristics + IoC, optional ClamAV/YARA adapters)
+- Still planned: PR creation from `fix_plan`, optional node agent for drift alerts
 
 **Phase 3 — platform**
 - Shipped: stdlib test runner, CI matrix (3.10–3.13) with lint + build/install smoke,

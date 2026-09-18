@@ -85,6 +85,18 @@ def main(argv: list[str] | None = None) -> int:
     p_ep.add_argument("--format", choices=["md", "json"], default="md")
     p_ep.add_argument("--out", default=None)
 
+    p_live = sub.add_parser("check_live", help="authorized live checks: headers, cookies, TLS, exposed paths")
+    p_live.add_argument("url")
+    p_live.add_argument("--scope", default=None, help="path to grim.scope.json")
+    p_live.add_argument("--active", action="store_true", help="allow active probes (scope must also allow)")
+    p_live.add_argument("--timeout", type=int, default=10)
+    p_live.add_argument("--format", choices=["md", "json", "sarif"], default="md")
+
+    p_mal = sub.add_parser("malware", help="malware scan: heuristics + IoC + optional ClamAV/YARA")
+    p_mal.add_argument("path")
+    p_mal.add_argument("--deep", action="store_true")
+    p_mal.add_argument("--format", choices=["md", "json", "sarif"], default="md")
+
     p_plan = sub.add_parser("plan", help="show the audit plan for a target")
     p_plan.add_argument("path")
     p_plan.add_argument("--no-network", action="store_true")
@@ -222,6 +234,13 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(text)
         return 0
+    if args.command == "check_live":
+        tool_args: dict = {"url": args.url, "active": bool(args.active), "timeout": args.timeout}
+        if args.scope:
+            tool_args["scope_path"] = args.scope
+        return _emit(call_tool("check_live", tool_args), args.format, None)
+    if args.command == "malware":
+        return _emit(call_tool("malware_scan", {"path": args.path, "deep": bool(args.deep)}), args.format, None)
     if args.command == "sbom":
         payload = call_tool("sbom", {"path": args.path, "format": args.format})
         if not payload.get("ok"):

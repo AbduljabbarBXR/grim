@@ -46,6 +46,10 @@ def build_plan(path: str, network: bool = True, deep: bool = False) -> dict:
         "Static analysis for upload/injection/RCE patterns in application code.")
     add("inventory_endpoints", "second",
         "Map routes and flag unauthenticated input surfaces (web/API apps).")
+    add("malware_scan", "second",
+        "Signature + heuristic malware scan (webshells, ELF, IoC hashes; ClamAV/YARA if installed).")
+    add("check_live", "optional",
+        "Authorized live checks (headers, cookies, TLS, exposed paths) - requires a scope file.")
     if deep:
         add("scan_iocs", "second", "Deep mode: match file hashes against known-bad IoC feeds.")
     if network and (detect.get("lockfiles") or any(s.get("manifest") for s in stacks)):
