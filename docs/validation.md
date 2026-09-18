@@ -67,8 +67,5 @@ compromise of a a web application (a hosting account).
 PYTHONPATH=src python3 -m grim tool audit_exposure --path backup.tar.gz --format md
 PYTHONPATH=src python3 -m grim diff baseline.tar.gz current.tar.gz --format md
 PYTHONPATH=src python3 -m grim scan /path/to/app-source --no-network
-python3 tests/test_tools.py    # v1 regression: 31 tests, stdlib only
-python3 tests/test_p0_v2.py    # drift/flow: 9 tests
-python3 tests/test_p1_v2.py    # multi-language: 15 tests
-python3 tests/test_p2_v2.py    # ledger/sbom/ioc/planner/cache: 34 tests
+python3 tests/run_all.py       # full suite: 114 checks, stdlib only, no pytest
 ```

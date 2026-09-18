@@ -257,6 +257,9 @@ def test_mcp_stdio() -> None:
 
 def test_deps_offline_note() -> None:
     print("audit_deps (network optional)")
+    if not _network_available():
+        print("  skip (offline): OSV.dev not reachable")
+        return
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         (root / "package.json").write_text(json.dumps({"dependencies": {"lodash": "4.17.15"}}))
@@ -266,6 +269,16 @@ def test_deps_offline_note() -> None:
             check("osv query executed (lodash 4.17.15 has known vulns)", total >= 1, f"total={total}")
         else:
             check("osv query executed", False, res.get("error", "unknown"))
+
+
+def _network_available() -> bool:
+    import socket
+
+    try:
+        socket.create_connection(("api.osv.dev", 443), timeout=3).close()
+        return True
+    except OSError:
+        return False
 
 
 if __name__ == "__main__":

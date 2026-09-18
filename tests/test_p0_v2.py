@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import shutil
 import sys
 import tempfile
@@ -11,7 +10,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from grim.core.report import render_json  # noqa: E402
 from grim.engines.diffscan import diff_artifacts, build_manifest  # noqa: E402
 from grim.engines.flow import scan_flow  # noqa: E402
 from grim.engines.codepatterns import scan_code  # noqa: E402

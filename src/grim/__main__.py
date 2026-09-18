@@ -21,7 +21,7 @@ import json
 import sys
 
 from . import __version__
-from .core.report import render_json, render_markdown, render_summary_line
+from .core.report import render_markdown, render_summary_line
 from .tools import TOOLS, call_tool
 
 
@@ -173,8 +173,6 @@ def _emit(payload: dict, fmt: str, out: str | None) -> int:
     if fmt == "json":
         text = json.dumps(payload, indent=2, default=str)
     else:
-        from .core.findings import Finding
-
         findings = [_to_finding(d) for d in payload.get("findings", [])]
         text = render_markdown(findings, payload.get("meta", {}))
         text += "\n" + render_summary_line(findings) + "\n"

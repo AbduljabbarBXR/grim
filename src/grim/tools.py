@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any, Callable
 
 from . import sbom as _sbom
@@ -14,7 +13,7 @@ from .core.planner import build_plan
 from .core.report import render_json, render_markdown
 from .engines.codepatterns import scan_code
 from .engines.deps import audit_deps
-from .engines.diffscan import diff_artifacts, build_manifest
+from .engines.diffscan import diff_artifacts
 from .engines.exposure import audit_exposure
 from .engines.secrets import scan_secrets, scan_secrets_history
 from .feeds import iocs as _iocs

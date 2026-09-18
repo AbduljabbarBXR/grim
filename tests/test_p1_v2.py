@@ -32,7 +32,8 @@ def check(name, cond):
 def main():
     tmp = Path(tempfile.mkdtemp(prefix="grim-p1-"))
     try:
-        locks = tmp / "locks"; locks.mkdir()
+        locks = tmp / "locks"
+        locks.mkdir()
         (locks / "Cargo.lock").write_text('[[package]]\nname = "serde"\nversion = "1.0.200"\n\n[[package]]\nname = "tokio"\nversion = "1.40.0"\n')
         (locks / "pubspec.lock").write_text('packages:\n  http:\n    dependency: "direct main"\n    version: "1.2.0"\n  path:\n    version: "1.9.0"\n')
         (locks / "go.mod").write_text("module example.com/app\n\ngo 1.22\n\nrequire github.com/gorilla/mux v1.8.1\n")
@@ -47,7 +48,8 @@ def main():
         check("packages.lock.json parsed", ("NuGet", "Newtonsoft.Json", "13.0.3") in pkgs)
         check("Gemfile.lock parsed", ("RubyGems", "rails", "7.1.3") in pkgs)
 
-        codes = tmp / "codes"; codes.mkdir()
+        codes = tmp / "codes"
+        codes.mkdir()
         (codes / "main.go").write_text('cmd := "sh -c " + userInput\nexec.Command(cmd)\n')
         (codes / "Main.java").write_text('String sql = "SELECT * FROM users WHERE id = " + id;\nstmt.executeQuery(sql);\n')
         (codes / "app.cs").write_text('var cmd = new SqlCommand("SELECT * FROM t WHERE x = " + input);\n')
@@ -63,7 +65,8 @@ def main():
         check("dart process rule fires", "Process with interpolated" in titles)
 
         # history + entropy + encoded
-        repo = tmp / "repo"; repo.mkdir()
+        repo = tmp / "repo"
+        repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
@@ -76,7 +79,8 @@ def main():
         hist = scan_secrets_history(str(repo))
         check("history finds rotated secret", any("history" in f.tags for f in hist))
 
-        sec = tmp / "sec"; sec.mkdir()
+        sec = tmp / "sec"
+        sec.mkdir()
         (sec / "cfg.py").write_text("token = 'Zx9Km2QvLp7wRt4sN6hJ8cF1dG3aB5eU7yI0oK2mN4pR6sT8uV0wX'\n")
         s = scan_secrets(str(sec))
         check("entropy detector fires", any("entropy" in f.tags for f in s))

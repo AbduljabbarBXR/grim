@@ -12,7 +12,6 @@ active-compromise blind spot.
 from __future__ import annotations
 
 import hashlib
-from pathlib import Path
 
 from ..core.findings import Finding, make_id
 from .exposure import (

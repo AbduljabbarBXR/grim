@@ -8,7 +8,7 @@
 **Status: v0.2.0.** v1 validated against a real compromise; v2 adds the planner, SBOM,
 MITRE ATT&CK tagging, an IoC hash feed, a persistent findings ledger, nested-archive
 scanning, a delta cache, and parallel scanning. Zero runtime dependencies (Python stdlib
-only), runs on Linux/macOS/Windows and Termux. 89 tests passing.
+only), runs on Linux/macOS/Windows and Termux. 114 tests passing across Python 3.10–3.13.
 
 ---
 
@@ -25,6 +25,17 @@ PYTHONPATH=src python3 -m grim mcp                          # MCP server on stdi
 ```
 
 Optional real install: `pip install -e .` (then `grim ...` works anywhere).
+
+### Develop and test
+
+```bash
+python3 tests/run_all.py     # runs every tests/test_*.py, no pytest needed
+ruff check src tests         # optional lint (pip install ruff)
+python -m build              # sdist + wheel
+```
+
+CI runs the full suite on Python 3.10, 3.11, 3.12, and 3.13, plus `ruff` and a
+build/install smoke test (`.github/workflows/ci.yml`).
 
 ### Use as MCP server in opencode
 
@@ -357,7 +368,9 @@ deny:
 - SARIF export for CI
 
 **Phase 3 — platform**
-- `ci_scan` with fail thresholds, `fix_plan` PR generation, remote rules sync
+- Shipped: stdlib test runner, CI matrix (3.10–3.13) with lint + build/install smoke,
+  PyPI-ready metadata (classifiers, urls, LICENSE, MANIFEST)
+- Still planned: `ci_scan` with fail thresholds, `fix_plan` PR generation, remote rules sync
 - Optional node agent (PHP/shell, no root) for shared hosting drift alerts
 - Dashboard/report hosting (optional paid tier)
 
@@ -399,23 +412,28 @@ Sanitized summary of a real incident that motivated this project:
 
 ```
 grim/
-├── README.md                  # this document
+├── README.md
+├── LICENSE
+├── pyproject.toml
+├── .github/workflows/ci.yml   # test matrix + lint + build
 ├── docs/
-│   ├── tools.md               # tool reference (generated)
-│   └── findings.md            # schema reference
+│   └── validation.md          # real-world case study
 ├── src/grim/
-│   ├── core/                  # detector, planner, runner, normalizer, ranker
-│   ├── tools/                 # one module per MCP tool
-│   ├── engines/               # engine adapters (semgrep, osv, clamav, yara...)
-│   ├── feeds/                 # feed sync + version reporting
-│   ├── policy/                # scope + safety enforcement
-│   └── report/                # md, json, sarif renderers
-├── rules/
-│   └── grim-filepolicy.yaml   # versioned heuristic rules (remote-syncable)
-├── tests/
-│   ├── fixtures/              # sanitized corpora (compromised + clean)
-│   └── golden/                # expected findings
-└── pyproject.toml
+│   ├── __main__.py            # CLI (scan, tool, diff, plan, sbom, ledger, iocs, mcp)
+│   ├── tools.py               # MCP tool registry
+│   ├── sbom.py                # CycloneDX 1.5 / SPDX 2.3
+│   ├── core/                  # detector, planner, findings, ledger, attack, report
+│   ├── engines/               # exposure, secrets, codepatterns, flow, deps, diffscan
+│   ├── feeds/                 # IoC store + remote feed sync
+│   └── mcp/                   # dependency-free stdio MCP server
+└── tests/
+    ├── run_all.py             # stdlib test runner (CI entry point)
+    ├── test_tools.py          # v1 regression
+    ├── test_p0_v2.py          # drift, flow
+    ├── test_p1_v2.py          # multi-language SAST, lockfiles, secrets
+    ├── test_p2_v2.py          # ledger, sbom, ioc, planner, cache, nested archives
+    └── test_p3_cli.py         # CLI, MCP, security edge cases
+```
 ```
 
 ---

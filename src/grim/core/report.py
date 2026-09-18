@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import json
-from collections import Counter
 from typing import Any, Iterable
 
-from .findings import Finding, SEVERITY_ORDER, summarize
+from .findings import Finding, summarize
 
 SEV_LABEL = {
     "critical": "CRITICAL",

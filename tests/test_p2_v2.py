@@ -19,7 +19,6 @@ os.environ["GRIM_IOC_CACHE"] = str(_TMP / "iocs.json")
 sys.path.insert(0, str(ROOT / "src"))
 
 from grim import sbom  # noqa: E402
-from grim.core import ledger as ledgermod  # noqa: E402
 from grim.core.attack import enrich  # noqa: E402
 from grim.core.findings import Finding  # noqa: E402
 from grim.core.planner import build_plan  # noqa: E402
