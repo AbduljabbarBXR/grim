@@ -12,7 +12,7 @@ from .engines.codepatterns import scan_code
 from .engines.deps import audit_deps
 from .engines.diffscan import diff_artifacts, build_manifest
 from .engines.exposure import audit_exposure
-from .engines.secrets import scan_secrets
+from .engines.secrets import scan_secrets, scan_secrets_history
 
 Handler = Callable[[dict], dict]
 
@@ -38,7 +38,12 @@ def _tool_audit_deps(args: dict) -> dict:
 
 def _tool_scan_secrets(args: dict) -> dict:
     findings = scan_secrets(args["path"], include_skipped=bool(args.get("include_skipped")))
-    return _findings_payload(findings, {"engine": "grim-secrets", "target": args["path"]})
+    meta = {"engine": "grim-secrets", "target": args["path"]}
+    if args.get("include_history"):
+        history = scan_secrets_history(args["path"])
+        findings.extend(history)
+        meta["history"] = True
+    return _findings_payload(findings, meta)
 
 
 def _tool_scan_code(args: dict) -> dict:
@@ -148,9 +153,13 @@ TOOLS: dict[str, dict[str, Any]] = {
         "handler": _tool_audit_deps,
     },
     "scan_secrets": {
-        "description": "Scan for leaked credentials, API keys, tokens, private keys, and sensitive files.",
+        "description": "Scan for leaked credentials, API keys, tokens, private keys, and sensitive files. Set include_history to also scan committed git history.",
         "schema": _schema(
-            {**PATH_PROP, "include_skipped": {"type": "boolean", "description": "Also scan node_modules/vendor (slower)"}},
+            {
+                **PATH_PROP,
+                "include_skipped": {"type": "boolean", "description": "Also scan node_modules/vendor (slower)"},
+                "include_history": {"type": "boolean", "description": "Also scan git history blobs for leaked secrets"},
+            },
             ["path"],
         ),
         "handler": _tool_scan_secrets,

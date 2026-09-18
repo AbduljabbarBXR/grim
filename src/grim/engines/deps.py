@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import urllib.request
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from ..core.findings import Finding, cvss_to_severity, make_id
@@ -73,8 +74,122 @@ def _collect_packages(p: Path) -> list[tuple[str, str, str]]:
             elif name == "requirements.txt":
                 for pkg, ver in _parse_requirements(fp):
                     add("PyPI", pkg, ver)
+            elif name in ("go.mod", "go.sum"):
+                for pkg, ver in _parse_go(fp):
+                    add("Go", pkg, ver)
+            elif name == "Cargo.lock":
+                for pkg, ver in _parse_cargo(fp):
+                    add("crates.io", pkg, ver)
+            elif name == "pubspec.lock":
+                for pkg, ver in _parse_pubspec(fp):
+                    add("Pub", pkg, ver)
+            elif name == "pom.xml":
+                for pkg, ver in _parse_maven(fp):
+                    add("Maven", pkg, ver)
+            elif name in ("packages.lock.json", "packages.config"):
+                for pkg, ver in _parse_nuget(fp):
+                    add("NuGet", pkg, ver)
+            elif name == "Gemfile.lock":
+                for pkg, ver in _parse_gemfile(fp):
+                    add("RubyGems", pkg, ver)
         except Exception:
             continue
+    return out
+
+
+def _parse_go(fp: Path) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    if fp.name == "go.mod":
+        for m in re.finditer(r"^\s*(?:require\s+)?([A-Za-z0-9._/\-]+\.[A-Za-z0-9._/\-]+)\s+v?(\d+\.\d+\.\d+[0-9A-Za-z.\-+]*)", fp.read_text(errors="ignore"), re.M):
+            out.append((m.group(1), m.group(2)))
+        return out
+    # go.sum lines: <module> <version> <hash>
+    for line in fp.read_text(errors="ignore").splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and not parts[0].endswith("/go.mod"):
+            out.append((parts[0], parts[1].lstrip("v")))
+    return out
+
+
+def _parse_cargo(fp: Path) -> list[tuple[str, str]]:
+    text = fp.read_text(errors="ignore")
+    out = []
+    for block in re.findall(r"\[\[package\]\](.*?)(?=\n\[\[package\]\]|\Z)", text, re.S):
+        name = re.search(r'name\s*=\s*"([^"]+)"', block)
+        ver = re.search(r'version\s*=\s*"([^"]+)"', block)
+        if name and ver:
+            out.append((name.group(1), ver.group(1)))
+    return out
+
+
+def _parse_pubspec(fp: Path) -> list[tuple[str, str]]:
+    text = fp.read_text(errors="ignore")
+    out = []
+    # pubspec.lock has flat YAML: "  name: foo" then "    version: \"1.2.3\""
+    current = None
+    for line in text.splitlines():
+        m = re.match(r"^  ([A-Za-z0-9_.\-]+):$", line)
+        if m:
+            current = m.group(1)
+            continue
+        m2 = re.match(r'^    version:\s*"([^"]+)"', line)
+        if m2 and current:
+            out.append((current, m2.group(1)))
+    return out
+
+
+def _parse_maven(fp: Path) -> list[tuple[str, str]]:
+    out = []
+    try:
+        root = ET.parse(str(fp)).getroot()
+    except ET.ParseError:
+        return out
+
+    def local(tag: str) -> str:
+        return tag.rsplit("}", 1)[-1]
+
+    def child_text(el, name):
+        for c in el:
+            if local(c.tag) == name:
+                return (c.text or "").strip()
+        return None
+
+    for dep in root.iter():
+        if local(dep.tag) != "dependency":
+            continue
+        g = child_text(dep, "groupId")
+        a = child_text(dep, "artifactId")
+        v = child_text(dep, "version")
+        if g and a and v and not v.startswith("$"):
+            out.append((f"{g}:{a}", v))
+    return out
+
+
+def _parse_nuget(fp: Path) -> list[tuple[str, str]]:
+    out = []
+    if fp.name == "packages.lock.json":
+        data = json.loads(fp.read_text(errors="ignore"))
+        for deps in (data.get("dependencies") or {}).values():
+            for name, meta in (deps or {}).items():
+                if isinstance(meta, dict) and meta.get("resolved"):
+                    out.append((name, str(meta["resolved"])))
+    else:
+        # packages.config XML
+        try:
+            root = ET.fromstring(fp.read_text(errors="ignore"))
+        except ET.ParseError:
+            return out
+        for pkg in root.iter("package"):
+            out.append((pkg.get("id", ""), pkg.get("version", "")))
+    return out
+
+
+def _parse_gemfile(fp: Path) -> list[tuple[str, str]]:
+    out = []
+    for line in fp.read_text(errors="ignore").splitlines():
+        m = re.match(r"^\s{4}([A-Za-z0-9_.\-]+)\s+\(([^)]+)\)", line)
+        if m:
+            out.append((m.group(1), m.group(2).split()[0]))
     return out
 
 
