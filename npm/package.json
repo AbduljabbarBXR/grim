@@ -13,6 +13,7 @@
   ],
   "scripts": {
     "sync": "node scripts/sync-python.mjs",
+    "build:mcpb": "node scripts/sync-python.mjs && python3 scripts/build_mcpb.py",
     "prepack": "node scripts/sync-python.mjs"
   },
   "keywords": [
@@ -38,5 +39,15 @@
     "win32"
   ],
   "license": "MIT",
+  "author": "AbduljabbarBXR",
+  "homepage": "https://github.com/AbduljabbarBXR/grim",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AbduljabbarBXR/grim.git",
+    "directory": "npm"
+  },
+  "bugs": {
+    "url": "https://github.com/AbduljabbarBXR/grim/issues"
+  },
   "mcpName": "io.github.AbduljabbarBXR/grim-mcp"
 }

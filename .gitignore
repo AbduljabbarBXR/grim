@@ -11,3 +11,5 @@ venv/
 npm/node_modules/
 npm/python/
 npm/*.tgz
+npm/*.mcpb
+npm/.mcpb-stage/

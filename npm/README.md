@@ -57,6 +57,8 @@ MITRE ATT&CK technique ID.
 ## Links
 
 - Source and full documentation: https://github.com/AbduljabbarBXR/grim
+- npm: `grim-mcp`
 - MCP registry: `io.github.AbduljabbarBXR/grim-mcp`
+- Smithery: `abdijabarboxer2009/grim-mcp` (https://smithery.ai/server/abdijabarboxer2009/grim-mcp)
 
 MIT licensed.

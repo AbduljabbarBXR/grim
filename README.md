@@ -48,6 +48,9 @@ npx -y grim-mcp version
 npx -y grim-mcp list
 ```
 
+Also listed on the official MCP registry (`io.github.AbduljabbarBXR/grim-mcp`) and Smithery
+(`abdijabarboxer2009/grim-mcp`).
+
 ### Use as MCP server in opencode
 
 ```json
