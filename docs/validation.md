@@ -67,5 +67,5 @@ compromise of a a web application (a hosting account).
 PYTHONPATH=src python3 -m grim tool audit_exposure --path backup.tar.gz --format md
 PYTHONPATH=src python3 -m grim diff baseline.tar.gz current.tar.gz --format md
 PYTHONPATH=src python3 -m grim scan /path/to/app-source --no-network
-python3 tests/run_all.py       # full suite: 114 checks, stdlib only, no pytest
+python3 tests/run_all.py       # full suite: 116 checks, stdlib only, no pytest
 ```
