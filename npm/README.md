@@ -55,8 +55,9 @@ grim mcp
 | `scan_iocs` | Match file hashes against a known-bad IoC store (+ EICAR) |
 | `update_feeds` | Sync the IoC store from a remote feed |
 | `ledger` | Persistent findings ledger: new / known / reopened / resolved |
-| `report` | Unified Markdown/JSON report |
+| `report` | Unified Markdown/JSON/SARIF report |
 | `scan` | One-shot audit across all engines |
+| `ci_scan` | CI gate: exit code by severity threshold |
 
 Every finding includes severity, confidence, location, evidence, remediation, and a
 MITRE ATT&CK technique ID.
