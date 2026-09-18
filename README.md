@@ -10,7 +10,7 @@
 **Status: v0.2.0.** v1 validated against a real compromise; v2 adds the planner, SBOM,
 MITRE ATT&CK tagging, an IoC hash feed, a persistent findings ledger, nested-archive
 scanning, a delta cache, and parallel scanning. Zero runtime dependencies (Python stdlib
-only), runs on Linux/macOS/Windows and Termux. 117 tests passing across Python 3.10–3.13.
+only), runs on Linux/macOS/Windows and Termux. 132 tests passing across Python 3.10–3.13.
 
 ---
 
@@ -102,7 +102,7 @@ directly while building or reviewing any app.
 8. [Engines and auto-updating feeds](#8-engines-and-auto-updating-feeds)
 9. [Safety and authorization model](#9-safety-and-authorization-model)
 10. [Roadmap](#10-roadmap)
-11. [Case study: what GRIM would have caught](#11-case-study-what-grim-would-have-caught)
+11. [Incident pattern](#11-incident-pattern)
 12. [Repo layout](#12-repo-layout)
 13. [Tech stack](#13-tech-stack)
 14. [Non-goals and honest limitations](#14-non-goals-and-honest-limitations)
@@ -126,10 +126,10 @@ adapt to that workflow:
   compromised right now?" is: *what changed since the last known-good state?* Almost nobody
   runs it.
 
-One real incident (see [case study](#11-case-study-what-grim-would-have-caught)) took three
-months of undetected access, credential harvesting, and executed native binaries before a
-manual audit found it in under an hour. Every artifact was findable by existing engines.
-No single tool was looking.
+One real incident (see [the incident pattern](#11-incident-pattern)) showed how undetected
+access, credential harvesting, and executed native binaries can persist for a long time before
+a manual audit finds them. Every artifact was findable by existing engines. No single tool was
+looking.
 
 **GRIM is the looker.**
 
@@ -259,9 +259,28 @@ GRIM's coverage model. Every tool belongs to one or more:
 | `update_feeds` | Sync the IoC store from a remote JSON feed |
 | `ledger` | Persistent findings ledger: new / known / reopened / resolved across audits |
 | MITRE ATT&CK | Every finding auto-tagged with technique IDs (e.g. `T1505.003`) |
-| Nested archives | `deep=true` extracts zip/tar inside zip/tar with traversal and size guards |
+| Nested archives | `deep=true` streams the archive and descends into nested zip/tar without extracting ordinary files; only inner archives are spilled, bounded, and reported |
 | Delta cache | SHA-256 keyed per-file result cache; unchanged files are not re-scanned |
 | Parallel scanning | Thread-pool SAST across files (`workers`) |
+
+### Limits and truncation
+
+Every cap is overridable via environment variables (`0` = unlimited). When a limit is hit,
+GRIM sets `truncated: true`, lists the reasons in `meta`, emits an info finding ("Scan was
+truncated"), and prints a warning in Markdown reports — so partial results are never silent.
+
+| Env var | Default | Covers |
+|---|---|---|
+| `GRIM_MAX_ARCHIVE_DEPTH` | 5 | nested-archive recursion depth |
+| `GRIM_MAX_ARCHIVE_BYTES` | 512 MB | total bytes spilled from nested archives |
+| `GRIM_MAX_ARCHIVE_ENTRY_BYTES` | 512 MB | per nested-archive size cap |
+| `GRIM_MAX_ENTRIES` | 600000 | entries examined / manifest entries |
+| `GRIM_MAX_CONTENT_READS` | 60000 | per-file content reads |
+| `GRIM_MAX_FINDINGS` | 3000 | exposure findings |
+| `GRIM_MAX_FILES` | 20000 | code files scanned |
+| `GRIM_MAX_SECRET_FILE_BYTES` | 2 MB | per-file secrets scan |
+| `GRIM_MAX_SECRET_FINDINGS` | 800 | secrets findings |
+| `GRIM_MAX_PACKAGES` | 3000 | dependency packages queried |
 
 ### Example call
 
@@ -269,7 +288,7 @@ GRIM's coverage model. Every tool belongs to one or more:
 {
   "tool": "audit_exposure",
   "arguments": {
-    "path": "/audits/backup_2026_09_17.tar.gz",
+    "path": "/audits/site-backup.tar.gz",
     "checks": ["web-executable", "dotfiles", "exposed-config", "backup-files", "elf-in-public"]
   }
 }
@@ -284,11 +303,11 @@ GRIM's coverage model. Every tool belongs to one or more:
       "category": "CWE-434",
       "owasp": "A04:2021",
       "title": "PHP file present in public upload directory",
-      "location": { "file": "app/public/uploads/img/sample-....php" },
-      "evidence": "520 bytes; contains password-gated command form; folder is web-served",
+      "location": { "file": "app/public/uploads/example.php" },
+      "evidence": "PHP code in a web-served upload folder",
       "remediation": "Remove file; block PHP execution in upload dirs; fix upload validation server-side",
       "confidence": 0.99,
-      "engine": "grim-filepolicy@0.1"
+      "engine": "grim-exposure"
     }
   ]
 }
@@ -411,32 +430,31 @@ manually, with zero critical false positives on the clean baseline.
 
 ---
 
-## 11. Case study: what GRIM would have caught
+## 11. Incident pattern
 
-Sanitized summary of a real incident that motivated this project:
+A pattern seen in real audits that motivated this project (victim, stack, host, and timeline
+details withheld):
 
-- A a web app stored uploads in a public directory and validated file types using a
-  **client-supplied allowlist** (`mimes:'.$request->mimes`) — an arbitrary-file-upload leading
-  to remote code execution.
-- An attacker used it to write UUID-named `.php` webshells into the public upload folder.
-- Over ~3 months: credential-harvesting scripts read every `.env` on the account, a downloader
-  installed a remote C2 client, and later two native binaries binaries were downloaded and executed.
-- The host's malware scanner eventually cleaned **one** file and left ~20 other artifacts,
-  including the stager and the executables, publicly reachable.
-- A manual audit found everything in under an hour by: diffing two backup file listings,
-  inspecting suspicious files, and reading a stray `error_log`.
+- A web app stored uploads in a public directory and validated file types using an
+  attacker-controllable allowlist — an arbitrary-file-upload leading to remote code execution.
+- An attacker used it to write web-executable files into the public upload folder.
+- Over time: credential-harvesting scripts read environment files, a downloader installed a
+  remote C2 client, and native executables were downloaded and executed.
+- Host malware scanners cleaned some files and left others publicly reachable.
+- A manual audit found everything in under an hour by diffing two backup file listings,
+  inspecting suspicious files, and reading logs.
 
 **GRIM coverage mapping:**
 
 | Artifact | Tool that catches it |
 |---|---|
-| `mimes:'.$request->mimes` pattern | `scan_code` (Semgrep taint) |
-| `.php` shells in public upload dir | `audit_exposure`, `malware_scan` |
-| `.sh` stager, `ELF` binaries in web dir | `audit_exposure` (web-executable, elf-in-public) |
-| New UUID `.php` files vs old backup | `watch` / backup diff |
+| Attacker-controllable upload type validation | `scan_code` |
+| Web-executable shells in public upload dir | `audit_exposure`, `malware_scan` |
+| Shell stager, ELF binaries in web dir | `audit_exposure` (web-executable, elf-in-public) |
+| Newly added executables vs old backup | `watch` / backup diff |
 | Credential-harvesting script pattern | `malware_scan` (YARA), `scan_code` |
 | Publicly reachable shells | `check_live` (authorized exposure probes) |
-| Exposed `.env` DB keys risk | `scan_secrets`, `audit_exposure` |
+| Exposed env/secret files risk | `scan_secrets`, `audit_exposure` |
 
 ---
 

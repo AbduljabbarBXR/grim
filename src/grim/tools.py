@@ -8,7 +8,7 @@ from . import sbom as _sbom
 from .core import ledger as _ledger
 from .core.attack import enrich
 from .core.detector import detect_stack
-from .core.findings import Finding, rank, summarize
+from .core.findings import Finding, make_id, rank, summarize
 from .core.planner import build_plan
 from .core.report import render_json, render_markdown
 from .engines.codepatterns import scan_code
@@ -21,13 +21,48 @@ from .feeds import iocs as _iocs
 Handler = Callable[[dict], dict]
 
 
+def _meta(engine: str, target: str, stats: dict | None = None, **extra: Any) -> dict:
+    """Build tool meta and surface any scan truncation."""
+    meta: dict[str, Any] = {"engine": engine, "target": target, **extra}
+    if stats:
+        meta["stats"] = stats
+        if stats.get("truncated"):
+            meta["truncated"] = True
+            meta["truncation_reasons"] = stats.get("reasons", [])
+    return meta
+
+
+def _truncation_finding(meta: dict) -> Finding:
+    reasons = meta.get("truncation_reasons") or ["result caps reached"]
+    return Finding(
+        id=make_id("TRUNC", str(meta.get("target", "scan")), "|".join(reasons)),
+        severity="info",
+        confidence=1.0,
+        category="CWE-1059",
+        owasp="A09:2021",
+        title="Scan was truncated - results are incomplete",
+        description=(
+            "One or more limits were reached, so some files or archives were not fully scanned. "
+            "Raise the relevant GRIM_MAX_* limit or scan a smaller target for complete coverage."
+        ),
+        location={"file": str(meta.get("target", ""))},
+        evidence="; ".join(reasons),
+        remediation="Increase the relevant GRIM_MAX_* environment limit and re-run, or split the target.",
+        engine="grim",
+        tags=["truncated", "incomplete"],
+    )
+
+
 def _findings_payload(findings: list[Finding], meta: dict | None = None) -> dict:
+    meta = meta or {}
+    if meta.get("truncated"):
+        findings = list(findings) + [_truncation_finding(meta)]
     ranked = enrich(rank(findings))
     return {
         "ok": True,
         "summary": summarize(ranked),
         "findings": [f.to_dict() for f in ranked],
-        "meta": meta or {},
+        "meta": meta,
     }
 
 
@@ -36,40 +71,48 @@ def _tool_detect_stack(args: dict) -> dict:
 
 
 def _tool_audit_deps(args: dict) -> dict:
-    findings = audit_deps(args["path"])
-    return _findings_payload(findings, {"engine": "osv", "target": args["path"]})
+    stats: dict = {}
+    findings = audit_deps(args["path"], stats=stats)
+    return _findings_payload(findings, _meta("osv", args["path"], stats))
 
 
 def _tool_scan_secrets(args: dict) -> dict:
-    findings = scan_secrets(args["path"], include_skipped=bool(args.get("include_skipped")))
-    meta = {"engine": "grim-secrets", "target": args["path"]}
+    stats: dict = {}
+    findings = scan_secrets(
+        args["path"], include_skipped=bool(args.get("include_skipped")), stats=stats
+    )
+    history = False
     if args.get("include_history"):
-        history = scan_secrets_history(args["path"])
-        findings.extend(history)
-        meta["history"] = True
-    return _findings_payload(findings, meta)
+        findings.extend(scan_secrets_history(args["path"]))
+        history = True
+    return _findings_payload(findings, _meta("grim-secrets", args["path"], stats, history=history))
 
 
 def _tool_scan_code(args: dict) -> dict:
+    stats: dict = {}
     findings = scan_code(
         args["path"],
         languages=args.get("languages"),
-        max_files=int(args.get("max_files", 20000)),
+        max_files=args.get("max_files"),
         workers=args.get("workers"),
         use_cache=bool(args.get("use_cache", True)),
+        stats=stats,
     )
-    return _findings_payload(findings, {"engine": "grim-codepatterns", "target": args["path"]})
+    return _findings_payload(findings, _meta("grim-codepatterns", args["path"], stats))
 
 
 def _tool_audit_exposure(args: dict) -> dict:
-    findings = audit_exposure(args["path"], deep=bool(args.get("deep")))
-    return _findings_payload(findings, {"engine": "grim-exposure", "target": args["path"]})
+    stats: dict = {}
+    deep = bool(args.get("deep"))
+    findings = audit_exposure(args["path"], deep=deep, stats=stats)
+    return _findings_payload(findings, _meta("grim-exposure", args["path"], stats, deep=deep))
 
 
 def _tool_diff_artifacts(args: dict) -> dict:
-    findings, stats = diff_artifacts(args["path_a"], args["path_b"], deep=bool(args.get("deep")))
-    return _findings_payload(findings, {"engine": "grim-diff", "stats": stats,
-                                        "baseline": args["path_a"], "current": args["path_b"]})
+    deep = bool(args.get("deep"))
+    findings, stats = diff_artifacts(args["path_a"], args["path_b"], deep=deep)
+    meta = _meta("grim-diff", args["path_b"], stats, baseline=args["path_a"], current=args["path_b"], deep=deep)
+    return _findings_payload(findings, meta)
 
 
 def _tool_plan(args: dict) -> dict:
@@ -157,33 +200,50 @@ def _tool_scan(args: dict) -> dict:
     detect = detect_stack(path)
     findings: list[Finding] = []
     ran: list[str] = []
+    sub_stats: dict[str, dict] = {}
+    reasons: list[str] = []
 
     def want(name: str) -> bool:
         return not selected or name in selected
 
+    def record(name: str, stats: dict) -> None:
+        sub_stats[name] = stats
+        if stats.get("truncated"):
+            for r in stats.get("reasons", []):
+                reasons.append(f"{name}: {r}")
+
     if want("exposure"):
-        findings.extend(audit_exposure(path, deep=deep))
+        s: dict = {}
+        findings.extend(audit_exposure(path, deep=deep, stats=s))
+        record("exposure", s)
         ran.append("exposure")
     if want("secrets"):
-        findings.extend(scan_secrets(path))
+        s = {}
+        findings.extend(scan_secrets(path, stats=s))
+        record("secrets", s)
         ran.append("secrets")
     if want("code"):
-        findings.extend(scan_code(path))
+        s = {}
+        findings.extend(scan_code(path, stats=s))
+        record("code", s)
         ran.append("code")
     if deep and want("iocs"):
         findings.extend(_iocs.scan_iocs(path, deep=deep))
         ran.append("iocs")
     if want("deps") and include_network and (detect.get("lockfiles") or _has_manifest(detect)):
         try:
-            findings.extend(audit_deps(path))
+            s = {}
+            findings.extend(audit_deps(path, stats=s))
+            record("deps", s)
             ran.append("deps")
         except Exception as exc:  # keep scan resilient
             ran.append(f"deps:error:{exc}")
 
-    return _findings_payload(
-        findings,
-        {"target": path, "tools_run": ran, "detect": detect, "deep": deep},
-    )
+    meta: dict = {"target": path, "tools_run": ran, "detect": detect, "deep": deep, "stats": sub_stats}
+    if reasons:
+        meta["truncated"] = True
+        meta["truncation_reasons"] = reasons
+    return _findings_payload(findings, meta)
 
 
 def _has_manifest(detect: dict) -> bool:

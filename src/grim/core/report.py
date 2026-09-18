@@ -33,7 +33,8 @@ def render_markdown(findings: Iterable[Finding], meta: dict[str, Any] | None = N
     lines.append("")
     if meta:
         for k, v in meta.items():
-            lines.append(f"- **{k}:** {v}")
+            if isinstance(v, (str, int, float, bool)) and v != "":
+                lines.append(f"- **{k}:** {v}")
     lines.append(f"- **Target:** {meta.get('target', '-') if meta else '-'}")
     lines.append(f"- **Total findings:** {s['total']}")
     by = s["by_severity"]
@@ -42,6 +43,10 @@ def render_markdown(findings: Iterable[Finding], meta: dict[str, Any] | None = N
         + " | ".join(f"{SEV_LABEL[k]}: {by.get(k, 0)}" for k in ["critical", "high", "medium", "low", "info"])
     )
     lines.append("")
+    if meta and meta.get("truncated"):
+        reasons = "; ".join(meta.get("truncation_reasons") or ["result caps reached"])
+        lines.append(f"> **WARNING: scan truncated - results are incomplete.** {reasons}")
+        lines.append("")
 
     if not findings:
         lines.append("No findings. Clean.")

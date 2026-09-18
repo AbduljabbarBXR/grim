@@ -10,6 +10,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from ..core import limits
 from ..core.findings import Finding, cvss_to_severity, make_id
 
 OSV_BATCH = "https://api.osv.dev/v1/querybatch"
@@ -20,24 +21,41 @@ BATCH_SIZE = 100
 MAX_PACKAGES = 3000
 
 
-def audit_deps(path: str) -> list[Finding]:
+def audit_deps(path: str, stats: dict | None = None) -> list[Finding]:
     """Parse lockfiles/manifests, query OSV, return findings."""
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(path)
 
     packages = _collect_packages(p)
-    if not packages:
-        return []
-
     findings: list[Finding] = []
-    for chunk in _chunks(packages[:MAX_PACKAGES], BATCH_SIZE):
+    reasons: list[str] = []
+    max_packages = limits.resolve("GRIM_MAX_PACKAGES", MAX_PACKAGES)
+    if limits.is_unlimited(max_packages):
+        selected = packages
+    else:
+        selected = packages[:max_packages]
+        if len(selected) < len(packages):
+            reasons.append(f"package limit reached ({max_packages})")
+
+    for chunk in _chunks(selected, BATCH_SIZE):
         results = _osv_querybatch(chunk)
         for (eco, name, version), res in zip(chunk, results):
             for vuln_stub in res.get("vulns", []) or []:
                 vid = vuln_stub.get("id", "?")
                 detail = _osv_vuln(vid)
                 findings.append(_to_finding(eco, name, version, detail))
+
+    if stats is not None:
+        stats.update(
+            {
+                "packages": len(selected),
+                "total_packages": len(packages),
+                "findings": len(findings),
+                "truncated": bool(reasons),
+                "reasons": reasons,
+            }
+        )
     return findings
 
 

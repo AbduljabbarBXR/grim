@@ -9,9 +9,11 @@ import re
 import subprocess
 from pathlib import Path
 
+from ..core import limits
 from ..core.findings import Finding, make_id
 
 MAX_FILE_BYTES = 2 * 1024 * 1024
+MAX_FINDINGS = 800
 SKIP_DIRS = {
     ".git", "node_modules", "vendor", ".venv", "venv", "__pycache__",
     "dist", "build", "coverage", ".next", ".nuxt", ".cache",
@@ -56,27 +58,50 @@ ENV_SECRET_ASSIGN = re.compile(
 )
 
 
-def scan_secrets(path: str, include_skipped: bool = False) -> list[Finding]:
+def scan_secrets(path: str, include_skipped: bool = False, stats: dict | None = None) -> list[Finding]:
     p = Path(path)
     findings: list[Finding] = []
+    state = {"files": 0, "oversize": 0}
+    reasons: list[str] = []
+    max_findings = limits.resolve("GRIM_MAX_SECRET_FINDINGS", MAX_FINDINGS)
+
     if not p.exists():
         raise FileNotFoundError(path)
-    if p.is_file():
-        findings.extend(_scan_file(p, root=p.parent, include_skipped=include_skipped))
+
+    def finish() -> list[Finding]:
+        if state["oversize"]:
+            reasons.append(f"{state['oversize']} file(s) exceeded the size cap and were skipped")
+        if stats is not None:
+            stats.update(
+                {
+                    "files_scanned": state["files"],
+                    "oversize_skipped": state["oversize"],
+                    "findings": len(findings),
+                    "truncated": bool(reasons),
+                    "reasons": reasons,
+                }
+            )
         return findings
+
+    if p.is_file():
+        state["files"] = 1
+        findings.extend(_scan_file(p, root=p.parent, include_skipped=include_skipped, state=state))
+        return finish()
 
     for root, dirs, files in os.walk(p):
         if not include_skipped:
             dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
         for fn in files:
             fp = Path(root) / fn
-            findings.extend(_scan_file(fp, root=p, include_skipped=include_skipped))
-            if len(findings) > 800:
-                return findings
-    return findings
+            state["files"] += 1
+            findings.extend(_scan_file(fp, root=p, include_skipped=include_skipped, state=state))
+            if limits.reached(len(findings), max_findings):
+                reasons.append(f"finding limit reached ({max_findings})")
+                return finish()
+    return finish()
 
 
-def _scan_file(fp: Path, root: Path, include_skipped: bool) -> list[Finding]:
+def _scan_file(fp: Path, root: Path, include_skipped: bool, state: dict | None = None) -> list[Finding]:
     out: list[Finding] = []
     name = fp.name
 
@@ -110,7 +135,12 @@ def _scan_file(fp: Path, root: Path, include_skipped: bool) -> list[Finding]:
         size = fp.stat().st_size
     except OSError:
         return out
-    if size == 0 or size > MAX_FILE_BYTES:
+    max_file_bytes = limits.resolve("GRIM_MAX_SECRET_FILE_BYTES", MAX_FILE_BYTES)
+    if size == 0:
+        return out
+    if not limits.is_unlimited(max_file_bytes) and size > max_file_bytes:
+        if state is not None:
+            state["oversize"] = state.get("oversize", 0) + 1
         return out
 
     try:

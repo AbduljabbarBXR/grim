@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import fields as dataclass_fields
 from pathlib import Path
 
+from ..core import limits
 from ..core.findings import Finding, make_id
 from .flow import scan_flow
 
@@ -466,14 +467,16 @@ def _from_dicts(dicts: list[dict]) -> list[Finding]:
 def scan_code(
     path: str,
     languages: list[str] | None = None,
-    max_files: int = MAX_FILES,
+    max_files: int | None = None,
     workers: int | None = None,
     use_cache: bool = True,
+    stats: dict | None = None,
 ) -> list[Finding]:
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(path)
-    files = [p] if p.is_file() else _walk(p, max_files)
+    file_limit = max_files if max_files is not None else limits.resolve("GRIM_MAX_FILES", MAX_FILES)
+    files = [p] if p.is_file() else _walk(p, file_limit)
     lang_filter = set(languages) if languages else None
     files = [f for f in files if _lang_of(f) is not None and (not lang_filter or _lang_of(f) in lang_filter)]
     files.sort(key=lambda x: str(x))
@@ -519,7 +522,20 @@ def scan_code(
         _save_cache(cache)
 
     # lightweight taint/flow pass on top of the pattern rules
-    findings.extend(scan_flow(path, languages=languages, max_files=max_files))
+    findings.extend(scan_flow(path, languages=languages, max_files=file_limit))
+
+    reasons: list[str] = []
+    if limits.reached(len(files), file_limit):
+        reasons.append(f"file limit reached ({file_limit})")
+    if stats is not None:
+        stats.update(
+            {
+                "files_scanned": len(files),
+                "findings": len(findings),
+                "truncated": bool(reasons),
+                "reasons": reasons,
+            }
+        )
     return findings
 
 

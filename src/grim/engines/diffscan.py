@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 
+from ..core import limits
 from ..core.findings import Finding, make_id
 from .exposure import (
     MAX_ENTRIES,
@@ -41,12 +42,14 @@ def _entry_hash(entry: Entry, reader) -> str:
 
 
 def diff_artifacts(path_a: str, path_b: str, classify_limit: int = MAX_CLASSIFY, deep: bool = False) -> tuple[list[Finding], dict]:
+    info: dict = {}
     source_a = open_source(path_a, nested=deep)
-    manifest_a_raw = _manifest(source_a)
+    manifest_a_raw = _manifest(source_a, info)
+    deep_a = source_a.stats() if deep and hasattr(source_a, "stats") else {}
     source_a.close()
 
     source_b = open_source(path_b, nested=deep)
-    manifest_b_raw = _manifest(source_b)
+    manifest_b_raw = _manifest(source_b, info)
 
     root_a = _common_root(manifest_a_raw)
     root_b = _common_root(manifest_b_raw)
@@ -85,7 +88,7 @@ def diff_artifacts(path_a: str, path_b: str, classify_limit: int = MAX_CLASSIFY,
                 if entry.is_dir or entry.is_link:
                     continue
                 npath = _strip_root(entry.path, root_b)
-                if npath not in scan_targets or stats["classified"] >= classify_limit:
+                if npath not in scan_targets or limits.reached(stats["classified"], classify_limit):
                     continue
                 data = b""
                 # use the full (unstripped) entry path for web-path context, since the
@@ -101,6 +104,8 @@ def diff_artifacts(path_a: str, path_b: str, classify_limit: int = MAX_CLASSIFY,
             source_b.close()
     else:
         source_b.close()
+
+    deep_b = source_b.stats() if deep and hasattr(source_b, "stats") else {}
 
     # changed executable marker (name level) when content scan did not flag it
     for rel in changed:
@@ -159,6 +164,22 @@ def diff_artifacts(path_a: str, path_b: str, classify_limit: int = MAX_CLASSIFY,
             tags=["drift", "summary"],
         )
     )
+    reasons: list[str] = []
+    if info.get("manifest_truncated"):
+        reasons.append("manifest entry limit reached")
+    if limits.reached(stats["classified"], classify_limit):
+        reasons.append(f"changed-file classify limit reached ({classify_limit})")
+    if deep:
+        stats["deep"] = {"a": deep_a, "b": deep_b}
+        for side in (deep_a, deep_b):
+            if side.get("depth_capped"):
+                reasons.append("archive nesting depth limit reached")
+            if side.get("budget_capped"):
+                reasons.append("nested-archive byte budget exhausted")
+            if side.get("oversize_skipped"):
+                reasons.append("nested archive exceeded the per-archive size cap")
+    stats["truncated"] = bool(reasons)
+    stats["reasons"] = reasons
     return findings, stats
 
 
@@ -170,7 +191,8 @@ def build_manifest(path: str, deep: bool = False) -> dict:
         source.close()
 
 
-def _manifest(source: Source) -> dict:
+def _manifest(source: Source, info: dict | None = None) -> dict:
+    max_entries = limits.resolve("GRIM_MAX_ENTRIES", MAX_ENTRIES)
     manifest: dict = {}
     for entry, reader in source.iter_items():
         if entry.is_dir or entry.is_link:
@@ -179,7 +201,9 @@ def _manifest(source: Source) -> dict:
             "size": entry.size,
             "hash": _entry_hash(entry, reader) if entry.size > 0 else "",
         }
-        if len(manifest) >= MAX_ENTRIES:
+        if limits.reached(len(manifest), max_entries):
+            if info is not None:
+                info["manifest_truncated"] = True
             break
     return manifest
 

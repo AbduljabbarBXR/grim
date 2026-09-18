@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator
 
+from ..core import limits
 from ..core.findings import Finding, make_id
 
 MAX_ENTRIES = 600_000
@@ -26,8 +27,9 @@ MAX_CONTENT_READS = 60_000
 MAX_FINDINGS = 3_000
 READ_LIMIT = 131_072  # 128 KB prefix per file for content checks
 MAGIC_LIMIT = 8192
-NESTED_MAX_DEPTH = 3
+NESTED_MAX_DEPTH = 5
 NESTED_MAX_BYTES = 512 * 1024 * 1024
+NESTED_MAX_ENTRY_BYTES = 512 * 1024 * 1024
 
 WEB_SEGMENTS = {
     "public", "public_html", "www", "htdocs", "web", "static", "assets",
@@ -205,7 +207,13 @@ class ArchiveSource(Source):
                     yield entry, reader
 
 
-def open_source(path: str, nested: bool = False) -> Source:
+def open_source(
+    path: str,
+    nested: bool = False,
+    max_depth: int | None = None,
+    max_bytes: int | None = None,
+    max_entry_bytes: int | None = None,
+) -> Source:
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(path)
@@ -213,37 +221,158 @@ def open_source(path: str, nested: bool = False) -> Source:
         return DirSource(path)
     if _archive_kind(str(path)):
         if nested:
-            return DeepArchiveSource(path)
+            return DeepArchiveSource(
+                path, max_depth=max_depth, max_bytes=max_bytes, max_entry_bytes=max_entry_bytes
+            )
         return ArchiveSource(path)
     raise ValueError(f"not a directory or archive: {path}")
 
 
+def _limit(explicit: int | None, env: str, default: int) -> int:
+    if explicit is not None:
+        return explicit
+    return limits.resolve(env, default)
+
+
+class _DeepState:
+    """Bookkeeping for the nested-archive walk."""
+
+    def __init__(self, tmp_root: Path, max_depth: int, max_bytes: int, max_entry_bytes: int):
+        self.tmp_root = tmp_root
+        self.max_depth = max_depth
+        self.max_bytes = max_bytes
+        self.max_entry_bytes = max_entry_bytes
+        self.extracted_bytes = 0
+        self.nested_archives = 0
+        self.depth_capped = 0
+        self.budget_capped = 0
+        self.oversize_skipped = 0
+
+    def remaining(self) -> int | None:
+        if limits.is_unlimited(self.max_bytes):
+            return None
+        return self.max_bytes - self.extracted_bytes
+
+    def stats(self) -> dict:
+        return {
+            "nested_archives": self.nested_archives,
+            "extracted_bytes": self.extracted_bytes,
+            "depth_capped": self.depth_capped,
+            "budget_capped": self.budget_capped,
+            "oversize_skipped": self.oversize_skipped,
+        }
+
+
+def _file_reader(path: Path) -> Callable[[int], bytes]:
+    def reader(limit: int, _p: Path = path) -> bytes:
+        try:
+            with open(_p, "rb") as fh:
+                return fh.read(limit)
+        except OSError:
+            return b""
+
+    return reader
+
+
 class DeepArchiveSource(Source):
-    """Archive source that extracts to an isolated temp dir and descends into nested
-    archives (zip/tar) up to a depth and byte budget. Read-only w.r.t. the original."""
+    """Streams an archive and descends into nested archives without extracting ordinary files.
+
+    The outer archive is read once. Non-archive entries are passed through untouched, so a
+    large backup is never truncated by the nested-archive budget. Only inner archives are
+    spilled to an isolated temp dir, bounded by a byte budget, a per-archive size cap, and a
+    depth limit. Every cap is recorded in ``stats()`` so callers can report truncation.
+    """
 
     def __init__(
         self,
         archive: str,
-        max_depth: int = NESTED_MAX_DEPTH,
-        max_bytes: int = NESTED_MAX_BYTES,
+        max_depth: int | None = None,
+        max_bytes: int | None = None,
+        max_entry_bytes: int | None = None,
     ):
         self.archive = archive
         self.label = str(archive)
         self._tmp = tempfile.mkdtemp(prefix="grim-arc-")
-        self._root = Path(self._tmp)
-        self._budget = max_bytes
-        self._max_depth = max_depth
-        try:
-            _extract_recursive(archive, self._root, 0, self)
-        except Exception:
-            pass
+        self._state = _DeepState(
+            Path(self._tmp),
+            _limit(max_depth, "GRIM_MAX_ARCHIVE_DEPTH", NESTED_MAX_DEPTH),
+            _limit(max_bytes, "GRIM_MAX_ARCHIVE_BYTES", NESTED_MAX_BYTES),
+            _limit(max_entry_bytes, "GRIM_MAX_ARCHIVE_ENTRY_BYTES", NESTED_MAX_ENTRY_BYTES),
+        )
+
+    def stats(self) -> dict:
+        return self._state.stats()
 
     def iter_items(self) -> Iterator[tuple[Entry, Callable[[int], bytes]]]:
-        yield from DirSource(str(self._root)).iter_items()
+        src = ArchiveSource(self.archive)
+        try:
+            yield from self._walk(src, "", 0)
+        finally:
+            src.close()
 
     def close(self) -> None:
         shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _walk(
+        self, source: Source, prefix: str, depth: int
+    ) -> Iterator[tuple[Entry, Callable[[int], bytes]]]:
+        for entry, reader in source.iter_items():
+            path = f"{prefix}{entry.path}" if prefix else entry.path
+            wrapped = Entry(path=path, size=entry.size, is_dir=entry.is_dir, is_link=entry.is_link)
+            if entry.is_dir or entry.is_link:
+                yield wrapped, reader
+                continue
+            if _archive_kind(entry.path):
+                temp_path = self._spill(entry, reader)
+                if temp_path is None:
+                    # budget/size cap: cannot decode, but still report the file itself
+                    yield wrapped, reader
+                    continue
+                self._state.nested_archives += 1
+                yield Entry(path=path, size=temp_path.stat().st_size), _file_reader(temp_path)
+                try:
+                    if depth < self._state.max_depth:
+                        inner = ArchiveSource(str(temp_path))
+                        try:
+                            yield from self._walk(inner, path + "/", depth + 1)
+                        finally:
+                            inner.close()
+                    else:
+                        self._state.depth_capped += 1
+                finally:
+                    try:
+                        temp_path.unlink()
+                    except OSError:
+                        pass
+                continue
+            yield wrapped, reader
+
+    def _spill(self, entry: Entry, reader: Callable[[int], bytes]) -> Path | None:
+        """Read one nested archive into a temp file, respecting the size and byte caps."""
+        size = entry.size
+        if size <= 0:
+            return None
+        if not limits.is_unlimited(self._state.max_entry_bytes) and size > self._state.max_entry_bytes:
+            self._state.oversize_skipped += 1
+            return None
+        remaining = self._state.remaining()
+        if remaining is not None and size > remaining:
+            self._state.budget_capped += 1
+            return None
+        data = reader(size + 1)
+        if not data:
+            return None
+        if remaining is not None and len(data) > remaining:
+            self._state.budget_capped += 1
+            return None
+        target = self._state.tmp_root / f"nested-{self._state.nested_archives}-{Path(entry.path).name}"
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        except OSError:
+            return None
+        self._state.extracted_bytes += len(data)
+        return target
 
 
 def _safe_rel(name: str) -> str | None:
@@ -254,51 +383,34 @@ def _safe_rel(name: str) -> str | None:
     return "/".join(parts)
 
 
-def _extract_recursive(archive: str, dest: Path, depth: int, state: DeepArchiveSource) -> None:
-    src = ArchiveSource(archive)
-    count = 0
-    try:
-        for entry, reader in src.iter_items():
-            if entry.is_dir or entry.is_link or entry.size < 0:
-                continue
-            if state._budget <= 0 or count >= MAX_ENTRIES:
-                break
-            rel = _safe_rel(entry.path)
-            if rel is None:
-                continue
-            target = dest / rel
-            target.parent.mkdir(parents=True, exist_ok=True)
-            data = reader(entry.size + 1) if entry.size > 0 else b""
-            state._budget -= len(data)
-            if state._budget < 0:
-                break
-            try:
-                target.write_bytes(data)
-            except OSError:
-                continue
-            count += 1
-            if depth < state._max_depth and _archive_kind(rel):
-                sub = target.parent / (target.name + ".extracted")
-                sub.mkdir(parents=True, exist_ok=True)
-                _extract_recursive(str(target), sub, depth + 1, state)
-                try:
-                    target.unlink()
-                except OSError:
-                    pass
-    finally:
-        src.close()
-
-
-def audit_exposure(path: str, deep: bool = False) -> list[Finding]:
-    source = open_source(path, nested=deep)
+def audit_exposure(
+    path: str,
+    deep: bool = False,
+    stats: dict | None = None,
+    max_findings: int | None = None,
+    max_entries: int | None = None,
+    max_content_reads: int | None = None,
+    max_depth: int | None = None,
+    max_archive_bytes: int | None = None,
+) -> list[Finding]:
+    source = open_source(path, nested=deep, max_depth=max_depth, max_bytes=max_archive_bytes)
     findings: list[Finding] = []
+    reasons: list[str] = []
     count = 0
     reads = 0
+    read_capped = False
+    entry_limit = _limit(max_entries, "GRIM_MAX_ENTRIES", MAX_ENTRIES)
+    read_limit = _limit(max_content_reads, "GRIM_MAX_CONTENT_READS", MAX_CONTENT_READS)
+    finding_limit = _limit(max_findings, "GRIM_MAX_FINDINGS", MAX_FINDINGS)
 
     try:
         for entry, reader in source.iter_items():
+            if limits.reached(count, entry_limit):
+                reasons.append(f"entry limit reached ({entry_limit})")
+                break
             count += 1
-            if count > MAX_ENTRIES or len(findings) >= MAX_FINDINGS:
+            if limits.reached(len(findings), finding_limit):
+                reasons.append(f"finding limit reached ({finding_limit})")
                 break
             if entry.is_link:
                 continue
@@ -310,7 +422,10 @@ def audit_exposure(path: str, deep: bool = False) -> list[Finding]:
                 continue
             if not _in_web_path(entry.path):
                 continue
-            if reads >= MAX_CONTENT_READS:
+            if limits.reached(reads, read_limit):
+                if not read_capped:
+                    read_capped = True
+                    reasons.append(f"content-read limit reached ({read_limit})")
                 continue
             reads += 1
             data = reader(min(READ_LIMIT, entry.size + 1))
@@ -318,6 +433,28 @@ def audit_exposure(path: str, deep: bool = False) -> list[Finding]:
                 _check_content(entry, data, findings)
     finally:
         source.close()
+
+    if deep and isinstance(source, DeepArchiveSource):
+        s = source.stats()
+        if s["depth_capped"]:
+            reasons.append("archive nesting depth limit reached")
+        if s["budget_capped"]:
+            reasons.append("nested-archive byte budget exhausted")
+        if s["oversize_skipped"]:
+            reasons.append("nested archive exceeded the per-archive size cap")
+
+    if stats is not None:
+        stats.update(
+            {
+                "entries": count,
+                "content_reads": reads,
+                "findings": len(findings),
+                "truncated": bool(reasons),
+                "reasons": reasons,
+            }
+        )
+        if deep and isinstance(source, DeepArchiveSource):
+            stats.update(source.stats())
     return findings
 
 
