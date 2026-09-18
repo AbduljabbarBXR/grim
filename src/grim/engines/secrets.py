@@ -7,6 +7,9 @@ import math
 import os
 import re
 import subprocess
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from ..core import limits
@@ -60,48 +63,86 @@ ENV_SECRET_ASSIGN = re.compile(
 
 def scan_secrets(path: str, include_skipped: bool = False, stats: dict | None = None) -> list[Finding]:
     p = Path(path)
-    findings: list[Finding] = []
-    state = {"files": 0, "oversize": 0}
-    reasons: list[str] = []
-    max_findings = limits.resolve("GRIM_MAX_SECRET_FINDINGS", MAX_FINDINGS)
-
     if not p.exists():
         raise FileNotFoundError(path)
 
-    def finish() -> list[Finding]:
-        if state["oversize"]:
-            reasons.append(f"{state['oversize']} file(s) exceeded the size cap and were skipped")
-        if stats is not None:
-            stats.update(
-                {
-                    "files_scanned": state["files"],
-                    "oversize_skipped": state["oversize"],
-                    "findings": len(findings),
-                    "truncated": bool(reasons),
-                    "reasons": reasons,
-                }
-            )
-        return findings
+    findings: list[Finding] = []
+    state = {"files": 0, "oversize": 0}
+    lock = threading.Lock()
+    reasons: list[str] = []
+    max_findings = limits.resolve("GRIM_MAX_SECRET_FINDINGS", MAX_FINDINGS)
+    file_cap = limits.resolve("GRIM_MAX_SECRET_FILES", 200_000)
+    workers = max(1, limits.resolve("GRIM_SECRET_WORKERS", 8))
+    start = time.monotonic()
+    dl = limits.deadline()
 
     if p.is_file():
         state["files"] = 1
-        findings.extend(_scan_file(p, root=p.parent, include_skipped=include_skipped, state=state))
-        return finish()
+        findings.extend(_scan_file(p, root=p.parent, include_skipped=include_skipped, state=state, lock=lock))
+    else:
+        files = _walk_files(p, include_skipped, file_cap)
+        state["files"] = len(files)
+        if not limits.is_unlimited(file_cap) and len(files) >= file_cap:
+            reasons.append(f"file limit reached ({file_cap})")
+        if workers > 1 and len(files) > 1:
+            def task(fp: Path) -> list[Finding]:
+                if limits.expired(dl):
+                    return []
+                return _scan_file(fp, root=p, include_skipped=include_skipped, state=state, lock=lock)
 
-    for root, dirs, files in os.walk(p):
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                for res in pool.map(task, files):
+                    findings.extend(res)
+        else:
+            for fp in files:
+                if limits.expired(dl):
+                    break
+                findings.extend(_scan_file(fp, root=p, include_skipped=include_skipped, state=state, lock=lock))
+
+    if limits.expired(dl):
+        reasons.append("time budget reached")
+    if limits.reached(len(findings), max_findings):
+        reasons.append(f"finding limit reached ({max_findings})")
+    if state["oversize"]:
+        reasons.append(f"{state['oversize']} file(s) exceeded the size cap and were skipped")
+    if stats is not None:
+        stats.update(
+            {
+                "files_scanned": state["files"],
+                "oversize_skipped": state["oversize"],
+                "findings": len(findings),
+                "truncated": bool(reasons),
+                "reasons": reasons,
+                "elapsed_seconds": limits.elapsed_str(start),
+            }
+        )
+    return findings
+
+
+def _walk_files(root: Path, include_skipped: bool, cap: int) -> list[Path]:
+    """Deterministic, symlink-safe, capped file list."""
+    out: list[Path] = []
+    for r, dirs, files in os.walk(root):
         if not include_skipped:
             dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
-        for fn in files:
-            fp = Path(root) / fn
-            state["files"] += 1
-            findings.extend(_scan_file(fp, root=p, include_skipped=include_skipped, state=state))
-            if limits.reached(len(findings), max_findings):
-                reasons.append(f"finding limit reached ({max_findings})")
-                return finish()
-    return finish()
+        dirs.sort()
+        for fn in sorted(files):
+            fp = Path(r) / fn
+            if fp.is_symlink():
+                continue
+            out.append(fp)
+            if not limits.is_unlimited(cap) and len(out) >= cap:
+                return out
+    return out
 
 
-def _scan_file(fp: Path, root: Path, include_skipped: bool, state: dict | None = None) -> list[Finding]:
+def _scan_file(
+    fp: Path,
+    root: Path,
+    include_skipped: bool,
+    state: dict | None = None,
+    lock: threading.Lock | None = None,
+) -> list[Finding]:
     out: list[Finding] = []
     name = fp.name
 
@@ -140,7 +181,11 @@ def _scan_file(fp: Path, root: Path, include_skipped: bool, state: dict | None =
         return out
     if not limits.is_unlimited(max_file_bytes) and size > max_file_bytes:
         if state is not None:
-            state["oversize"] = state.get("oversize", 0) + 1
+            if lock is not None:
+                with lock:
+                    state["oversize"] = state.get("oversize", 0) + 1
+            else:
+                state["oversize"] = state.get("oversize", 0) + 1
         return out
 
     try:

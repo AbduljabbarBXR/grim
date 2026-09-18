@@ -10,7 +10,7 @@
 **Status: v0.2.0.** v1 validated against a real compromise; v2 adds the planner, SBOM,
 MITRE ATT&CK tagging, an IoC hash feed, a persistent findings ledger, nested-archive
 scanning, a delta cache, and parallel scanning. Zero runtime dependencies (Python stdlib
-only), runs on Linux/macOS/Windows and Termux. 132 tests passing across Python 3.10–3.13.
+only), runs on Linux/macOS/Windows and Termux. 144 tests passing across Python 3.10–3.13.
 
 ---
 
@@ -277,10 +277,21 @@ truncated"), and prints a warning in Markdown reports — so partial results are
 | `GRIM_MAX_ENTRIES` | 600000 | entries examined / manifest entries |
 | `GRIM_MAX_CONTENT_READS` | 60000 | per-file content reads |
 | `GRIM_MAX_FINDINGS` | 3000 | exposure findings |
-| `GRIM_MAX_FILES` | 20000 | code files scanned |
+| `GRIM_MAX_FILES` | 20000 | source files scanned (code/flow) |
+| `GRIM_MAX_FLOW_FINDINGS` | 400 | flow-analysis findings |
+| `GRIM_MAX_CODE_FILE_BYTES` | 1 MB | per-file code scan size |
 | `GRIM_MAX_SECRET_FILE_BYTES` | 2 MB | per-file secrets scan |
 | `GRIM_MAX_SECRET_FINDINGS` | 800 | secrets findings |
+| `GRIM_MAX_SECRET_FILES` | 200000 | files secrets-scanned |
 | `GRIM_MAX_PACKAGES` | 3000 | dependency packages queried |
+| `GRIM_MAX_SECONDS` | 0 (off) | wall-clock budget per scan |
+| `GRIM_SECRET_WORKERS` | 8 | secrets-scan threads |
+| `GRIM_OSV_WORKERS` | 8 | OSV request threads |
+| `GRIM_OSV_BUDGET_SECONDS` | 60 | total OSV network budget |
+
+The delta cache (`~/.cache/grim/code/findings.json`) is content- and path-keyed, invalidated
+by a rules hash, and written atomically; identical files in different paths never share
+findings. Set `use_cache=false` on `scan_code` to bypass it.
 
 ### Example call
 

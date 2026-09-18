@@ -165,6 +165,11 @@ def diff_artifacts(path_a: str, path_b: str, classify_limit: int = MAX_CLASSIFY,
         )
     )
     reasons: list[str] = []
+    errors: list[str] = []
+    for side, src, label in ((deep_a, source_a, "baseline"), (deep_b, source_b, "current")):
+        if getattr(src, "error", None):
+            errors.append(f"{label}: {src.error}")
+        errors.extend(side.get("errors", []))
     if info.get("manifest_truncated"):
         reasons.append("manifest entry limit reached")
     if limits.reached(stats["classified"], classify_limit):
@@ -178,8 +183,11 @@ def diff_artifacts(path_a: str, path_b: str, classify_limit: int = MAX_CLASSIFY,
                 reasons.append("nested-archive byte budget exhausted")
             if side.get("oversize_skipped"):
                 reasons.append("nested archive exceeded the per-archive size cap")
+    for err in errors:
+        reasons.append(f"unreadable archive: {err}")
     stats["truncated"] = bool(reasons)
     stats["reasons"] = reasons
+    stats["errors"] = errors
     return findings, stats
 
 

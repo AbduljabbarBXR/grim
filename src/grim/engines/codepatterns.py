@@ -7,13 +7,15 @@ import json
 import os
 import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import fields as dataclass_fields
 from pathlib import Path
 
 from ..core import limits
 from ..core.findings import Finding, make_id
-from .flow import scan_flow
+from .flow import analyze_text
+from .flow import rules_hash as _flow_rules_hash
 
 MAX_FILE_BYTES = 1024 * 1024
 MAX_FILES = 20000
@@ -419,10 +421,19 @@ IP_URL = re.compile(r"https?://(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?::\d+)?")
 PRIVATE_IP = re.compile(r"^(10\.|127\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|0\.|169\.254\.)")
 
 
+def _rules_hash() -> str:
+    basis = "".join(f"{rid}|{pat.pattern}|{sev}" for rid, pat, sev, *_ in RULES)
+    return hashlib.sha256((basis + "|" + _flow_rules_hash()).encode("utf-8", "ignore")).hexdigest()[:16]
+
+
 def _cache_version() -> str:
     from .. import __version__
 
-    return f"{__version__}:{len(RULES)}"
+    return f"{__version__}:{_rules_hash()}"
+
+
+def _path_key(fp: Path) -> str:
+    return os.path.abspath(str(fp))
 
 
 def _cache_path() -> Path:
@@ -441,11 +452,14 @@ def _load_cache() -> dict:
 
 
 def _save_cache(cache: dict) -> None:
+    """Atomically persist the cache so concurrent scans never see a half-written file."""
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         if len(cache) > CACHE_MAX_ENTRIES:
             cache = dict(list(cache.items())[-CACHE_MAX_ENTRIES:])
-        _cache_path().write_text(json.dumps(cache), encoding="utf-8")
+        tmp = _cache_path().with_name("findings.json.tmp")
+        tmp.write_text(json.dumps(cache), encoding="utf-8")
+        os.replace(tmp, _cache_path())
     except OSError:
         pass
 
@@ -476,10 +490,22 @@ def scan_code(
     if not p.exists():
         raise FileNotFoundError(path)
     file_limit = max_files if max_files is not None else limits.resolve("GRIM_MAX_FILES", MAX_FILES)
-    files = [p] if p.is_file() else _walk(p, file_limit)
+    is_file = p.is_file()
+    if is_file:
+        candidates = [p]
+    else:
+        # Collect deterministically (sorted names) up to a hard ceiling, then apply the
+        # limit after sorting so coverage does not depend on filesystem walk order.
+        if limits.is_unlimited(file_limit):
+            ceiling = 2_000_000
+        else:
+            ceiling = max(file_limit * 5, 200_000, file_limit)
+        candidates = _walk(p, ceiling)
     lang_filter = set(languages) if languages else None
-    files = [f for f in files if _lang_of(f) is not None and (not lang_filter or _lang_of(f) in lang_filter)]
-    files.sort(key=lambda x: str(x))
+    candidates = [f for f in candidates if _lang_of(f) is not None and (not lang_filter or _lang_of(f) in lang_filter)]
+    candidates.sort(key=lambda x: str(x))
+    files = candidates if limits.is_unlimited(file_limit) else candidates[:file_limit]
+    walk_capped = (not is_file) and len(candidates) >= (file_limit * 5 if not limits.is_unlimited(file_limit) else 2_000_000)
 
     if workers is None:
         workers = min(8, os.cpu_count() or 1)
@@ -487,8 +513,12 @@ def scan_code(
     cache = _load_cache() if (use_cache and files) else {}
     lock = threading.Lock()
     version = _cache_version()
+    start = time.monotonic()
+    dl = limits.deadline()
 
     def task(fp: Path) -> list[Finding]:
+        if limits.expired(dl):
+            return []
         lang = _lang_of(fp)
         if lang is None:
             return []
@@ -497,12 +527,17 @@ def scan_code(
             return []
         key = ""
         if use_cache:
-            key = f"{version}:{_hash_text(text)}"
+            # Path is part of the key: identical content in two files must not replay
+            # one file's findings for the other (the finding carries its path and id).
+            key = f"{version}:{_path_key(fp)}:{_hash_text(text)}"
             with lock:
                 cached = cache.get(key)
             if cached is not None:
-                return _from_dicts(cached)
+                replay = _from_dicts(cached)
+                if all(Path(r.location.get("file", "")) == Path(str(fp)) for r in replay):
+                    return replay
         result = _scan_text(text, fp, lang)
+        result.extend(analyze_text(text, fp, lang))
         if use_cache and key:
             payload = [f.to_dict() for f in result]
             with lock:
@@ -521,19 +556,23 @@ def scan_code(
     if use_cache and files:
         _save_cache(cache)
 
-    # lightweight taint/flow pass on top of the pattern rules
-    findings.extend(scan_flow(path, languages=languages, max_files=file_limit))
-
     reasons: list[str] = []
-    if limits.reached(len(files), file_limit):
-        reasons.append(f"file limit reached ({file_limit})")
+    if limits.expired(dl):
+        reasons.append("time budget reached")
+    if not limits.is_unlimited(file_limit) and len(candidates) > len(files):
+        reasons.append(f"file limit reached ({file_limit} of {len(candidates)})")
+    elif walk_capped:
+        reasons.append("file discovery ceiling reached; coverage may be incomplete")
+    flow_findings = sum(1 for f in findings if f.engine == "grim-flow")
     if stats is not None:
         stats.update(
             {
                 "files_scanned": len(files),
                 "findings": len(findings),
+                "flow_findings": flow_findings,
                 "truncated": bool(reasons),
                 "reasons": reasons,
+                "elapsed_seconds": limits.elapsed_str(start),
             }
         )
     return findings
@@ -543,8 +582,10 @@ def _walk(root: Path, max_files: int) -> list[Path]:
     out: list[Path] = []
     for r, dirs, fnames in os.walk(root):
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
-        for fn in fnames:
+        for fn in sorted(fnames):
             fp = Path(r) / fn
+            if fp.is_symlink():
+                continue
             if _lang_of(fp):
                 out.append(fp)
                 if len(out) >= max_files:

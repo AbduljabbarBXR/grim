@@ -13,6 +13,7 @@ import os
 import re
 from pathlib import Path
 
+from ..core import limits
 from ..core.findings import Finding, make_id
 
 MAX_FILE_BYTES = 1024 * 1024
@@ -143,23 +144,62 @@ SINKS: dict[str, list[tuple[re.Pattern, str, str, str, str]]] = {
 }
 
 
-def scan_flow(path: str, languages: list[str] | None = None, max_files: int = 20000) -> list[Finding]:
+def rules_hash() -> str:
+    """Stable hash of the flow source/sink rules, for cache invalidation."""
+    import hashlib
+
+    basis = []
+    for lang, pats in sorted(SOURCES.items()):
+        basis.extend(f"src:{lang}:{p.pattern}" for p in pats)
+    for lang, rules in sorted(SINKS.items()):
+        basis.extend(f"sink:{lang}:{r[0].pattern}:{r[1]}" for r in rules)
+    return hashlib.sha256("|".join(basis).encode("utf-8", "ignore")).hexdigest()[:16]
+
+
+def scan_flow(
+    path: str,
+    languages: list[str] | None = None,
+    max_files: int | None = None,
+    stats: dict | None = None,
+) -> list[Finding]:
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(path)
+    file_limit = max_files if max_files is not None else limits.resolve("GRIM_MAX_FILES", 20000)
+    finding_limit = limits.resolve("GRIM_MAX_FLOW_FINDINGS", MAX_FINDINGS)
     findings: list[Finding] = []
-    files = [p] if p.is_file() else _walk(p, max_files)
+    files = [p] if p.is_file() else _walk(p, file_limit)
+    files.sort(key=lambda x: str(x))
     lang_filter = set(languages) if languages else None
+    reasons: list[str] = []
+    scanned = 0
+    dl = limits.deadline()
 
     for fp in files:
-        if len(findings) >= MAX_FINDINGS:
+        if limits.expired(dl):
+            reasons.append("time budget reached")
+            break
+        if limits.reached(len(findings), finding_limit):
+            reasons.append(f"flow finding limit reached ({finding_limit})")
             break
         lang = _lang_of(fp)
         if lang is None:
             continue
         if lang_filter and lang not in lang_filter:
             continue
+        scanned += 1
         findings.extend(_scan_file(fp, lang))
+    if limits.reached(len(files), file_limit):
+        reasons.append(f"file limit reached ({file_limit})")
+    if stats is not None:
+        stats.update(
+            {
+                "flow_files_scanned": scanned,
+                "flow_findings": len(findings),
+                "truncated": bool(reasons),
+                "reasons": reasons,
+            }
+        )
     return findings
 
 
@@ -167,8 +207,10 @@ def _walk(root: Path, max_files: int) -> list[Path]:
     out: list[Path] = []
     for r, dirs, fnames in os.walk(root):
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
-        for fn in fnames:
+        for fn in sorted(fnames):
             fp = Path(r) / fn
+            if fp.is_symlink():
+                continue
             if _lang_of(fp):
                 out.append(fp)
                 if len(out) >= max_files:
@@ -184,23 +226,28 @@ def _lang_of(fp: Path) -> str | None:
 
 
 def _scan_file(fp: Path, lang: str) -> list[Finding]:
-    out: list[Finding] = []
     try:
-        if fp.stat().st_size > MAX_FILE_BYTES:
-            return out
-        lines = fp.read_text(encoding="utf-8", errors="ignore").splitlines()
+        if fp.stat().st_size > limits.resolve("GRIM_MAX_CODE_FILE_BYTES", MAX_FILE_BYTES):
+            return []
+        text = fp.read_text(encoding="utf-8", errors="ignore")
     except OSError:
-        return out
+        return []
+    return analyze_text(text, fp, lang)
 
+
+def analyze_text(text: str, fp: Path, lang: str) -> list[Finding]:
+    """Run the taint pass over already-loaded text (used by scan_code to avoid re-reading)."""
+    out: list[Finding] = []
     sources = SOURCES.get(lang, [])
     sinks = SINKS.get(lang, [])
     if not sources or not sinks:
         return out
 
+    lines = text.splitlines()
     tainted: set[str] = set()
     src_re = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)")
 
-    for line in lines:
+    for lineno, line in enumerate(lines, start=1):
         stripped = line.strip()
         if not stripped or stripped.startswith(("#", "//", "*", "/*", "<!--")):
             continue
@@ -212,7 +259,7 @@ def _scan_file(fp: Path, lang: str) -> list[Finding]:
                 continue
             arg_region = stripped[m.end():]
             if any(src.search(arg_region) for src in sources) and not arg_region.startswith("="):
-                out.append(_mk(fp, lang, sev, title, desc, fix, stripped, direct=True))
+                out.append(_mk(fp, lang, sev, title, desc, fix, stripped, lineno, direct=True))
                 break
 
         # assignments that taint a variable
@@ -235,7 +282,7 @@ def _scan_file(fp: Path, lang: str) -> list[Finding]:
                 continue
             arg_region = stripped[m.end():]
             if any(re.search(rf"\b{re.escape(tv)}\b", arg_region) for tv in tainted):
-                out.append(_mk(fp, lang, sev, title, desc, fix, stripped, direct=False))
+                out.append(_mk(fp, lang, sev, title, desc, fix, stripped, lineno, direct=False))
                 break
 
     # keep only unique taint findings per file (id dedupes anyway)
@@ -243,18 +290,18 @@ def _scan_file(fp: Path, lang: str) -> list[Finding]:
 
 
 def _mk(fp: Path, lang: str, sev: str, title: str, desc: str, fix: str,
-        line_text: str, direct: bool) -> Finding:
+        line_text: str, line_no: int, direct: bool) -> Finding:
     prefix = "FLOW"
     tag = "direct-taint" if direct else "taint"
     return Finding(
-        id=make_id(prefix, title + ("-direct" if direct else ""), str(fp)),
+        id=make_id(prefix, title + ("-direct" if direct else ""), f"{fp}:{line_no}"),
         severity=sev,
         confidence=0.8 if direct else 0.65,
         category="CWE-20",
         owasp="A03:2021",
         title=title,
         description=desc + (" Direct source to sink on one line." if direct else " Tainted variable reaches the sink."),
-        location={"file": str(fp)},
+        location={"file": str(fp), "line": line_no},
         evidence=line_text[:160],
         remediation=fix,
         engine="grim-flow",

@@ -14,6 +14,7 @@ import re
 import shutil
 import tarfile
 import tempfile
+import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +31,7 @@ MAGIC_LIMIT = 8192
 NESTED_MAX_DEPTH = 5
 NESTED_MAX_BYTES = 512 * 1024 * 1024
 NESTED_MAX_ENTRY_BYTES = 512 * 1024 * 1024
+SPILL_CHUNK = 1 << 20  # 1 MB streaming chunk for nested-archive extraction
 
 WEB_SEGMENTS = {
     "public", "public_html", "www", "htdocs", "web", "static", "assets",
@@ -96,6 +98,7 @@ class Source:
     """Read-only, single-pass source over a directory or archive."""
 
     label: str = "source"
+    error: str | None = None
 
     def iter_items(self) -> Iterator[tuple[Entry, Callable[[int], bytes]]]:
         """Yield (entry, reader) exactly once per entry, in stream order."""
@@ -154,7 +157,8 @@ class ArchiveSource(Source):
         if self._kind == "tar":
             try:
                 tf = tarfile.open(self.archive, "r:*")
-            except (tarfile.TarError, OSError):
+            except (tarfile.TarError, OSError) as exc:
+                self.error = f"unreadable tar archive: {exc}"
                 return
             with tf:
                 for m in tf:
@@ -167,23 +171,36 @@ class ArchiveSource(Source):
                     if entry.is_dir or entry.is_link or not m.isfile():
                         yield entry, (lambda limit: b"")
                         continue
-                    state = {"read": False}
+                    state = {"f": None, "done": False}
 
                     def reader(limit: int, _tf: tarfile.TarFile = tf, _m: tarfile.TarInfo = m, _st: dict = state) -> bytes:
-                        if _st["read"]:
+                        # Sequential, multi-call reader so consumers can stream in chunks.
+                        if _st["done"]:
                             return b""
-                        _st["read"] = True
+                        if _st["f"] is None:
+                            try:
+                                _st["f"] = _tf.extractfile(_m)
+                            except (OSError, tarfile.TarError):
+                                _st["done"] = True
+                                return b""
+                            if _st["f"] is None:
+                                _st["done"] = True
+                                return b""
                         try:
-                            f = _tf.extractfile(_m)
-                            return f.read(limit) if f else b""
+                            data = _st["f"].read(limit)
                         except (OSError, tarfile.TarError):
+                            _st["done"] = True
                             return b""
+                        if not data:
+                            _st["done"] = True
+                        return data or b""
 
                     yield entry, reader
         else:
             try:
                 zf = zipfile.ZipFile(self.archive)
-            except (zipfile.BadZipFile, OSError):
+            except (zipfile.BadZipFile, OSError) as exc:
+                self.error = f"unreadable zip archive: {exc}"
                 return
             with zf:
                 for info in zf.infolist():
@@ -197,12 +214,25 @@ class ArchiveSource(Source):
                         yield entry, (lambda limit: b"")
                         continue
 
-                    def reader(limit: int, _zf: zipfile.ZipFile = zf, _name: str = info.filename) -> bytes:
-                        try:
-                            with _zf.open(_name) as f:
-                                return f.read(limit)
-                        except (OSError, zipfile.BadZipFile, KeyError):
+                    state = {"f": None, "done": False}
+
+                    def reader(limit: int, _zf: zipfile.ZipFile = zf, _name: str = info.filename, _st: dict = state) -> bytes:
+                        if _st["done"]:
                             return b""
+                        if _st["f"] is None:
+                            try:
+                                _st["f"] = _zf.open(_name)
+                            except (OSError, zipfile.BadZipFile, KeyError):
+                                _st["done"] = True
+                                return b""
+                        try:
+                            data = _st["f"].read(limit)
+                        except (OSError, zipfile.BadZipFile):
+                            _st["done"] = True
+                            return b""
+                        if not data:
+                            _st["done"] = True
+                        return data or b""
 
                     yield entry, reader
 
@@ -247,6 +277,8 @@ class _DeepState:
         self.depth_capped = 0
         self.budget_capped = 0
         self.oversize_skipped = 0
+        self.errors: list[str] = []
+        self._spilled: dict[str, Path] = {}
 
     def remaining(self) -> int | None:
         if limits.is_unlimited(self.max_bytes):
@@ -260,6 +292,7 @@ class _DeepState:
             "depth_capped": self.depth_capped,
             "budget_capped": self.budget_capped,
             "oversize_skipped": self.oversize_skipped,
+            "errors": list(self.errors),
         }
 
 
@@ -308,6 +341,8 @@ class DeepArchiveSource(Source):
         try:
             yield from self._walk(src, "", 0)
         finally:
+            if src.error:
+                self._state.errors.append(src.error)
             src.close()
 
     def close(self) -> None:
@@ -323,12 +358,11 @@ class DeepArchiveSource(Source):
                 yield wrapped, reader
                 continue
             if _archive_kind(entry.path):
-                temp_path = self._spill(entry, reader)
+                temp_path = self._spill(entry, reader, path)
                 if temp_path is None:
                     # budget/size cap: cannot decode, but still report the file itself
                     yield wrapped, reader
                     continue
-                self._state.nested_archives += 1
                 yield Entry(path=path, size=temp_path.stat().st_size), _file_reader(temp_path)
                 try:
                     if depth < self._state.max_depth:
@@ -336,22 +370,30 @@ class DeepArchiveSource(Source):
                         try:
                             yield from self._walk(inner, path + "/", depth + 1)
                         finally:
+                            if inner.error:
+                                self._state.errors.append(f"{path}: {inner.error}")
                             inner.close()
                     else:
                         self._state.depth_capped += 1
                 finally:
-                    try:
-                        temp_path.unlink()
-                    except OSError:
-                        pass
+                    # spilled archives stay cached in temp until close(), so a second
+                    # traversal (e.g. diff manifest + classify) does not re-extract them
+                    pass
                 continue
             yield wrapped, reader
 
-    def _spill(self, entry: Entry, reader: Callable[[int], bytes]) -> Path | None:
-        """Read one nested archive into a temp file, respecting the size and byte caps."""
+    def _spill(self, entry: Entry, reader: Callable[[int], bytes], path: str) -> Path | None:
+        """Stream one nested archive to a temp file, bounded by size and byte budgets.
+
+        Memory stays flat regardless of archive size. Results are cached by path so a
+        second walk reuses the same temp file instead of consuming the budget twice.
+        """
         size = entry.size
         if size <= 0:
             return None
+        cached = self._state._spilled.get(path)
+        if cached is not None and cached.exists():
+            return cached
         if not limits.is_unlimited(self._state.max_entry_bytes) and size > self._state.max_entry_bytes:
             self._state.oversize_skipped += 1
             return None
@@ -359,19 +401,33 @@ class DeepArchiveSource(Source):
         if remaining is not None and size > remaining:
             self._state.budget_capped += 1
             return None
-        data = reader(size + 1)
-        if not data:
-            return None
-        if remaining is not None and len(data) > remaining:
-            self._state.budget_capped += 1
-            return None
-        target = self._state.tmp_root / f"nested-{self._state.nested_archives}-{Path(entry.path).name}"
+
+        target = self._state.tmp_root / f"nested-{len(self._state._spilled)}-{Path(entry.path).name}"
+        written = 0
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(data)
+            with open(target, "wb") as out:
+                while True:
+                    data = reader(SPILL_CHUNK)
+                    if not data:
+                        break
+                    if remaining is not None and written + len(data) > remaining:
+                        self._state.budget_capped += 1
+                        out.close()
+                        target.unlink(missing_ok=True)
+                        return None
+                    out.write(data)
+                    written += len(data)
         except OSError:
+            if target.exists():
+                target.unlink(missing_ok=True)
             return None
-        self._state.extracted_bytes += len(data)
+        if written == 0:
+            target.unlink(missing_ok=True)
+            return None
+        self._state.extracted_bytes += written
+        self._state.nested_archives += 1
+        self._state._spilled[path] = target
         return target
 
 
@@ -399,12 +455,17 @@ def audit_exposure(
     count = 0
     reads = 0
     read_capped = False
+    start = time.monotonic()
+    dl = limits.deadline()
     entry_limit = _limit(max_entries, "GRIM_MAX_ENTRIES", MAX_ENTRIES)
     read_limit = _limit(max_content_reads, "GRIM_MAX_CONTENT_READS", MAX_CONTENT_READS)
     finding_limit = _limit(max_findings, "GRIM_MAX_FINDINGS", MAX_FINDINGS)
 
     try:
         for entry, reader in source.iter_items():
+            if limits.expired(dl):
+                reasons.append("time budget reached")
+                break
             if limits.reached(count, entry_limit):
                 reasons.append(f"entry limit reached ({entry_limit})")
                 break
@@ -434,14 +495,20 @@ def audit_exposure(
     finally:
         source.close()
 
+    errors: list[str] = []
+    if getattr(source, "error", None):
+        errors.append(source.error)
     if deep and isinstance(source, DeepArchiveSource):
         s = source.stats()
+        errors.extend(s.get("errors", []))
         if s["depth_capped"]:
             reasons.append("archive nesting depth limit reached")
         if s["budget_capped"]:
             reasons.append("nested-archive byte budget exhausted")
         if s["oversize_skipped"]:
             reasons.append("nested archive exceeded the per-archive size cap")
+    for err in errors:
+        reasons.append(f"unreadable archive: {err}")
 
     if stats is not None:
         stats.update(
@@ -451,6 +518,8 @@ def audit_exposure(
                 "findings": len(findings),
                 "truncated": bool(reasons),
                 "reasons": reasons,
+                "errors": errors,
+                "elapsed_seconds": limits.elapsed_str(start),
             }
         )
         if deep and isinstance(source, DeepArchiveSource):

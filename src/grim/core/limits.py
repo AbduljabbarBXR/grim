@@ -9,6 +9,7 @@ Convention: a value of ``0`` (or negative) means **unlimited**.
 from __future__ import annotations
 
 import os
+import time
 
 
 def resolve(name: str, default: int) -> int:
@@ -35,3 +36,17 @@ def clamp(count: int, limit: int) -> int:
     if is_unlimited(limit):
         return count
     return min(count, limit)
+
+
+def deadline() -> float | None:
+    """Wall-clock deadline for the current scan, or None if unlimited."""
+    secs = resolve("GRIM_MAX_SECONDS", 0)
+    return time.monotonic() + secs if secs > 0 else None
+
+
+def expired(dl: float | None) -> bool:
+    return dl is not None and time.monotonic() > dl
+
+
+def elapsed_str(start: float) -> float:
+    return round(time.monotonic() - start, 3)

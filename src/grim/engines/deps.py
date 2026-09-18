@@ -6,8 +6,10 @@ import json
 import os
 import re
 import subprocess
+import time
 import urllib.request
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from ..core import limits
@@ -30,6 +32,7 @@ def audit_deps(path: str, stats: dict | None = None) -> list[Finding]:
     packages = _collect_packages(p)
     findings: list[Finding] = []
     reasons: list[str] = []
+    errors: list[str] = []
     max_packages = limits.resolve("GRIM_MAX_PACKAGES", MAX_PACKAGES)
     if limits.is_unlimited(max_packages):
         selected = packages
@@ -38,22 +41,55 @@ def audit_deps(path: str, stats: dict | None = None) -> list[Finding]:
         if len(selected) < len(packages):
             reasons.append(f"package limit reached ({max_packages})")
 
-    for chunk in _chunks(selected, BATCH_SIZE):
-        results = _osv_querybatch(chunk)
-        for (eco, name, version), res in zip(chunk, results):
-            for vuln_stub in res.get("vulns", []) or []:
-                vid = vuln_stub.get("id", "?")
-                detail = _osv_vuln(vid)
-                findings.append(_to_finding(eco, name, version, detail))
+    workers = max(1, limits.resolve("GRIM_OSV_WORKERS", 8))
+    budget = limits.resolve("GRIM_OSV_BUDGET_SECONDS", 60)
+    deadline = time.monotonic() + budget if budget > 0 else None
+
+    chunks = list(_chunks(selected, BATCH_SIZE))
+    per_package: list[tuple[str, str, str, list[str]]] = []
+    all_vids: list[str] = []
+    if chunks:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results_by_chunk = pool.map(_osv_querybatch, chunks)
+            for chunk, results in zip(chunks, results_by_chunk):
+                for (eco, name, version), res in zip(chunk, results):
+                    vids = [
+                        v.get("id")
+                        for v in (res.get("vulns", []) or [])
+                        if isinstance(v, dict) and v.get("id")
+                    ]
+                    per_package.append((eco, name, version, vids))
+                    all_vids.extend(vids)
+
+    unique_vids = sorted(set(all_vids))
+    details: dict[str, dict] = {}
+    if unique_vids:
+        def fetch(vid: str) -> tuple[str, dict]:
+            if deadline is not None and time.monotonic() > deadline:
+                return vid, {"id": vid}
+            return vid, _osv_vuln(vid)
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for vid, detail in pool.map(fetch, unique_vids):
+                details[vid] = detail
+
+    for eco, name, version, vids in per_package:
+        for vid in vids:
+            findings.append(_to_finding(eco, name, version, details.get(vid, {"id": vid})))
+
+    if deadline is not None and time.monotonic() > deadline:
+        reasons.append(f"OSV time budget reached ({budget}s)")
 
     if stats is not None:
         stats.update(
             {
                 "packages": len(selected),
                 "total_packages": len(packages),
+                "vulnerabilities": len(unique_vids),
                 "findings": len(findings),
                 "truncated": bool(reasons),
                 "reasons": reasons,
+                "errors": errors,
             }
         )
     return findings
