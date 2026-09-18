@@ -7,10 +7,10 @@
 
 > MCP registry: `io.github.AbduljabbarBXR/grim-mcp` (mcp-name: io.github.AbduljabbarBXR/grim-mcp)
 
-**Status: v0.3.0.** v1 validated against a real compromise; v2 adds the planner, SBOM,
+**Status: v0.4.0.** v1 validated against a real compromise; v2 adds the planner, SBOM,
 MITRE ATT&CK tagging, an IoC hash feed, a persistent findings ledger, nested-archive
 scanning, a delta cache, and parallel scanning. Zero runtime dependencies (Python stdlib
-only), runs on Linux/macOS/Windows and Termux. 163 tests passing across Python 3.10–3.13.
+only), runs on Linux/macOS/Windows and Termux. 204 tests passing across Python 3.10–3.13.
 
 ---
 
@@ -31,6 +31,16 @@ PYTHONPATH=src python3 -m grim mcp                          # MCP server on stdi
 ```bash
 grim ci /path/to/app --fail-on high --format md          # exit 1 when high+ found
 grim ci /path/to/app --format sarif --out grim.sarif     # upload SARIF to code scanning
+```
+
+### Drift, endpoints, and fixes
+
+```bash
+grim watch /path/to/app --save                           # store a known-good baseline
+grim watch /path/to/app                                  # diff current state vs baseline
+grim endpoints /path/to/app                              # route inventory + auth/input risk
+grim fix_plan /path/to/app                               # remediation steps + safe diffs
+grim update-feeds --url https://example.com/grim-feed.json   # sync rules + IoCs
 ```
 
 Optional real install: `pip install -e .` (then `grim ...` works anywhere).
@@ -270,6 +280,10 @@ GRIM's coverage model. Every tool belongs to one or more:
 | Parallel scanning | Thread-pool SAST across files (`workers`) |
 | SARIF 2.1.0 | `--format sarif` and the `report` tool for code-scanning integrations |
 | `ci_scan` / `grim ci` | CI gate: exit code by severity threshold (`--fail-on`) |
+| `watch` | Persistent baseline + drift detection (`save` / `diff` / `status`) |
+| `fix_plan` | Ordered remediation steps, with safe unified diffs (`git apply`-able) |
+| `inventory_endpoints` | Route inventory (Express, Laravel, Django, Go, Next.js, Astro) with auth/input/risk |
+| Rule feeds | `update_feeds` syncs SAST rule overlays + IoC hashes from a JSON feed |
 
 ### Limits and truncation
 
@@ -286,6 +300,8 @@ truncated"), and prints a warning in Markdown reports — so partial results are
 | `GRIM_MAX_CONTENT_READS` | 60000 | per-file content reads |
 | `GRIM_MAX_FINDINGS` | 3000 | exposure findings |
 | `GRIM_MAX_FILES` | 20000 | source files scanned (code/flow) |
+| `GRIM_MAX_RULE_MATCHES` | 10 | hits per rule per file |
+| `GRIM_MAX_FILE_FINDINGS` | 200 | findings per file |
 | `GRIM_MAX_FLOW_FINDINGS` | 400 | flow-analysis findings |
 | `GRIM_MAX_CODE_FILE_BYTES` | 1 MB | per-file code scan size |
 | `GRIM_MAX_SECRET_FILE_BYTES` | 10 MB | per-file secrets scan |
@@ -296,6 +312,8 @@ truncated"), and prints a warning in Markdown reports — so partial results are
 | `GRIM_SECRET_WORKERS` | 8 | secrets-scan threads |
 | `GRIM_OSV_WORKERS` | 8 | OSV request threads |
 | `GRIM_OSV_BUDGET_SECONDS` | 60 | total OSV network budget |
+| `GRIM_FEEDS_URL` | (unset) | rule + IoC feed URL for `update_feeds` |
+| `GRIM_RULES_CACHE` | `~/.cache/grim/rules.json` | synced rule overlay path |
 
 The delta cache (`~/.cache/grim/code/findings.json`) is content- and path-keyed, invalidated
 by a rules hash, and written atomically; identical files in different paths never share
@@ -437,12 +455,15 @@ deny:
   hardening (correct delta cache, unreadable-archive reporting, single-pass code+flow,
   parallel secrets, deterministic selection, streamed nested spill, wall-clock budget)
 - Multi-language SAST + lockfile coverage: Go, Rust, Java, Kotlin, C#, Ruby, Dart
-- Still planned: `inventory_endpoints`, `check_live` (passive first), `malware_scan`
+- Shipped in 0.4.0: `watch` (baselines + drift), `fix_plan` (remediation + safe diffs),
+  `inventory_endpoints`, remote rule feeds, bounded per-occurrence rules, cross-platform CI
+- Still planned: `check_live` (passive first), `malware_scan` (optional ClamAV/YARA)
 
 **Phase 3 — platform**
 - Shipped: stdlib test runner, CI matrix (3.10–3.13) with lint + build/install smoke,
   PyPI-ready metadata (classifiers, urls, LICENSE, MANIFEST)
-- Still planned: `fix_plan` PR generation, remote rules sync
+- Still planned: PR creation from `fix_plan` (currently emits applyable diffs), remote rules
+  sync shipped via `update_feeds`
 - Optional node agent (PHP/shell, no root) for shared hosting drift alerts
 - Dashboard/report hosting (optional paid tier)
 

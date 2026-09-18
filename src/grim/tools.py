@@ -16,6 +16,7 @@ from .core.report import render_json, render_markdown, render_sarif
 from .engines.codepatterns import scan_code
 from .engines.deps import audit_deps
 from .engines.diffscan import diff_artifacts
+from .engines.endpoints import inventory_endpoints
 from .engines.exposure import audit_exposure
 from .engines.secrets import scan_secrets, scan_secrets_history
 from .engines.watch import save_baseline, watch_diff
@@ -118,6 +119,19 @@ def _tool_watch(args: dict) -> dict:
         return _findings_payload(findings, meta)
 
     return {"ok": False, "error": f"unknown action: {action}"}
+
+
+def _tool_inventory_endpoints(args: dict) -> dict:
+    stats: dict = {}
+    endpoints, findings = inventory_endpoints(args["path"], stats=stats)
+    by_risk = {r: sum(1 for e in endpoints if e["risk"] == r) for r in ("high", "medium", "low")}
+    by_framework: dict[str, int] = {}
+    for e in endpoints:
+        by_framework[e["framework"]] = by_framework.get(e["framework"], 0) + 1
+    payload = _findings_payload(findings, _meta("grim-endpoints", args["path"], stats))
+    payload["endpoints"] = endpoints
+    payload["endpoint_summary"] = {"total": len(endpoints), "by_risk": by_risk, "by_framework": by_framework}
+    return payload
 
 
 def _tool_fix_plan(args: dict) -> dict:
@@ -471,6 +485,11 @@ TOOLS: dict[str, dict[str, Any]] = {
             [],
         ),
         "handler": _tool_fix_plan,
+    },
+    "inventory_endpoints": {
+        "description": "Enumerate application routes (Express, Laravel, Django, Go, Next.js, Astro) with method, auth middleware, input surface, and risk rank.",
+        "schema": _schema({**PATH_PROP}, ["path"]),
+        "handler": _tool_inventory_endpoints,
     },
     "plan": {
         "description": "Build an ordered, explainable audit plan for a target: which tools to run and why, based on detected stack and inputs.",

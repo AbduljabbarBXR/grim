@@ -80,6 +80,11 @@ def main(argv: list[str] | None = None) -> int:
     p_fix.add_argument("--no-patches", action="store_true")
     p_fix.add_argument("--deep", action="store_true")
 
+    p_ep = sub.add_parser("endpoints", help="inventory application routes and rank risk")
+    p_ep.add_argument("path")
+    p_ep.add_argument("--format", choices=["md", "json"], default="md")
+    p_ep.add_argument("--out", default=None)
+
     p_plan = sub.add_parser("plan", help="show the audit plan for a target")
     p_plan.add_argument("path")
     p_plan.add_argument("--no-network", action="store_true")
@@ -201,6 +206,22 @@ def main(argv: list[str] | None = None) -> int:
         return _print_json(call_tool("plan", {"path": args.path,
                                               "network": not args.no_network,
                                               "deep": args.deep}))
+    if args.command == "endpoints":
+        payload = call_tool("inventory_endpoints", {"path": args.path})
+        if not payload.get("ok"):
+            print(f"error: {payload.get('error')}", file=sys.stderr)
+            return 1
+        if args.format == "json":
+            text = json.dumps(payload, indent=2, default=str)
+        else:
+            text = _render_endpoints(payload)
+        if args.out:
+            with open(args.out, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            print(f"wrote {args.out}")
+        else:
+            print(text)
+        return 0
     if args.command == "sbom":
         payload = call_tool("sbom", {"path": args.path, "format": args.format})
         if not payload.get("ok"):
@@ -234,6 +255,27 @@ def main(argv: list[str] | None = None) -> int:
 def _print_json(payload: dict) -> int:
     print(json.dumps(payload, indent=2, default=str))
     return 0 if payload.get("ok") else 1
+
+
+def _render_endpoints(payload: dict) -> str:
+    s = payload.get("endpoint_summary", {})
+    lines = ["# GRIM Endpoint Inventory", ""]
+    lines.append(f"- total endpoints: {s.get('total', 0)}")
+    lines.append(f"- by risk: {s.get('by_risk', {})}")
+    lines.append(f"- by framework: {s.get('by_framework', {})}")
+    lines.append("")
+    order = {"high": 0, "medium": 1, "low": 2}
+    rows = sorted(payload.get("endpoints", []), key=lambda e: (order.get(e.get("risk"), 3), e.get("path", "")))
+    if rows:
+        lines.append("| Risk | Method | Path | Auth | Inputs | File |")
+        lines.append("|---|---|---|---|---|---|")
+        for e in rows:
+            lines.append(
+                f"| {e.get('risk')} | {e.get('method')} | `{e.get('path')}` | "
+                f"{'yes' if e.get('auth') else 'no'} | {'yes' if e.get('inputs') else 'no'} | "
+                f"`{e.get('file')}:{e.get('line')}` |"
+            )
+    return "\n".join(lines)
 
 
 def _render_fix_plan(plan: dict) -> str:

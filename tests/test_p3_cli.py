@@ -19,6 +19,7 @@ os.environ["GRIM_IOC_CACHE"] = str(_TMP / "iocs.json")
 sys.path.insert(0, str(ROOT / "src"))
 
 from grim import sbom  # noqa: E402
+from grim import __version__  # noqa: E402
 from grim.core import attack  # noqa: E402
 from grim.core.planner import build_plan  # noqa: E402
 from grim.engines.exposure import _safe_rel, audit_exposure  # noqa: E402
@@ -64,7 +65,7 @@ def main() -> int:
 
 def _test_cli() -> None:
     r = grim("version")
-    check("cli version", r.returncode == 0 and "grim 0.3" in r.stdout)
+    check("cli version", r.returncode == 0 and __version__ in r.stdout)
 
     r = grim("list")
     check("cli list shows v2 tools", r.returncode == 0 and "sbom" in r.stdout and "ledger" in r.stdout)

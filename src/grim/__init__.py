@@ -1,3 +1,3 @@
 """GRIM — security audit orchestrator for code, deps, exposure, and active compromise."""
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
