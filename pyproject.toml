@@ -3,22 +3,24 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "grim"
-version = "0.2.0"
-description = "GRIM — security audit MCP: detects security gaps, exposures, and active compromise across any stack"
+name = "grim-mcp"
+version = "0.2.1"
+description = "Security audit MCP server: finds code, dependency, exposure, secrets, and active-compromise gaps across any stack"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [{ name = "AbduljabbarBXR" }]
-keywords = ["security", "mcp", "audit", "malware", "sast", "osv", "sbom", "mitre-attack"]
+keywords = ["security", "mcp", "model-context-protocol", "audit", "malware", "sast", "osv", "sbom", "mitre-attack"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Security",
 ]
 [project.urls]

@@ -33,6 +33,13 @@ npx -y grim-mcp version    # print engine version
 npx -y grim-mcp list       # list audit tools
 ```
 
+Or install the Python package instead:
+
+```bash
+pip install grim-mcp
+grim mcp
+```
+
 ## Tools
 
 | Tool | Purpose |

@@ -5,6 +5,8 @@
 > Works on any stack. For AI-built apps and existing complex codebases. Point it at a folder,
 > a repo, or an authorized live URL, and get a prioritized, evidence-backed report with fixes.
 
+> MCP registry: `io.github.AbduljabbarBXR/grim-mcp` (mcp-name: io.github.AbduljabbarBXR/grim-mcp)
+
 **Status: v0.2.0.** v1 validated against a real compromise; v2 adds the planner, SBOM,
 MITRE ATT&CK tagging, an IoC hash feed, a persistent findings ledger, nested-archive
 scanning, a delta cache, and parallel scanning. Zero runtime dependencies (Python stdlib
@@ -37,15 +39,16 @@ python -m build              # sdist + wheel
 CI runs the full suite on Python 3.10, 3.11, 3.12, and 3.13, plus `ruff` and a
 build/install smoke test (`.github/workflows/ci.yml`).
 
-### Install from npm (MCP launcher)
+### Install from npm or PyPI
 
-`grim-mcp` bundles the Python engine and runs it as a stdio MCP server, so no manual
-path setup is needed (requires Node 18+ and Python 3.10+):
+`grim-mcp` bundles the Python engine and runs it as a stdio MCP server (requires
+Python 3.10+; the npm package also requires Node 18+):
 
 ```bash
-npx -y grim-mcp            # MCP server on stdio
-npx -y grim-mcp version
-npx -y grim-mcp list
+npx -y grim-mcp            # npm
+pip install grim-mcp       # PyPI, then: grim mcp
+grim version
+grim list
 ```
 
 Also listed on the official MCP registry (`io.github.AbduljabbarBXR/grim-mcp`) and Smithery
