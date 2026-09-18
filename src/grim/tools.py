@@ -189,9 +189,40 @@ def _tool_scan_iocs(args: dict) -> dict:
 
 
 def _tool_update_feeds(args: dict) -> dict:
+    import json
+
+    from .feeds import rules as _rules_feed
+
+    url = args.get("url") or _rules_feed.feed_url() or _iocs.FEED_URL
+    if not url:
+        return {"ok": False, "error": "no feed URL configured (set GRIM_FEEDS_URL or pass url)"}
     ioc_path = args.get("ioc_path")
-    added = _iocs.sync(args.get("url"), ioc_path)
-    return {"ok": True, "added": added, "total": len(_iocs.load(ioc_path))}
+    try:
+        data = json.loads(_iocs._fetch(url))
+    except Exception as exc:
+        return {"ok": False, "error": f"feed fetch failed: {exc}"}
+
+    rules_added = 0
+    iocs_added = 0
+    version = ""
+    if isinstance(data, dict):
+        version = str(data.get("version") or "")
+        if isinstance(data.get("rules"), list):
+            rules_added = _rules_feed.save(data["rules"], source=url, version=version)
+        indicators = data.get("iocs") or data.get("indicators")
+        if isinstance(indicators, list):
+            iocs_added = _iocs.add([d for d in indicators if isinstance(d, dict)], ioc_path)
+    elif isinstance(data, list):
+        iocs_added = _iocs.add([d for d in data if isinstance(d, dict)], ioc_path)
+
+    return {
+        "ok": True,
+        "source": url,
+        "version": version,
+        "rules_added": rules_added,
+        "iocs_added": iocs_added,
+        "rules_total": len(_rules_feed.load_raw().get("rules", [])),
+    }
 
 
 def _tool_ledger(args: dict) -> dict:
@@ -477,7 +508,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         "handler": _tool_scan_iocs,
     },
     "update_feeds": {
-        "description": "Sync the indicator-of-compromise store from a remote JSON feed (URL or GRIM_IOC_FEED env).",
+        "description": "Sync detection feeds: SAST rules and IoC hashes, from a URL or GRIM_FEEDS_URL. Feed is JSON: {version, rules:[...], iocs:[...]} or a bare IoC list.",
         "schema": _schema(
             {
                 "url": {"type": "string", "description": "Feed URL (JSON list or {indicators:[...]})"},

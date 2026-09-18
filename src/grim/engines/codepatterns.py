@@ -14,6 +14,7 @@ from pathlib import Path
 
 from ..core import limits
 from ..core.findings import Finding, make_id
+from ..feeds import rules as _rules_feed
 from .flow import analyze_text
 from .flow import rules_hash as _flow_rules_hash
 
@@ -425,7 +426,29 @@ PRIVATE_IP = re.compile(r"^(10\.|127\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|0\.|
 
 def _rules_hash() -> str:
     basis = "".join(f"{rid}|{pat.pattern}|{sev}" for rid, pat, sev, *_ in RULES)
-    return hashlib.sha256((basis + "|" + _flow_rules_hash()).encode("utf-8", "ignore")).hexdigest()[:16]
+    basis += "|" + _flow_rules_hash() + "|" + _rules_feed.digest()
+    return hashlib.sha256(basis.encode("utf-8", "ignore")).hexdigest()[:16]
+
+
+_overlay_cache: dict = {"mtime": None, "rules": []}
+
+
+def _overlay_rules() -> list:
+    """Compiled feed rules, reloaded when the overlay file changes."""
+    p = _rules_feed.cache_path()
+    try:
+        mtime = p.stat().st_mtime
+    except OSError:
+        mtime = None
+    if mtime != _overlay_cache["mtime"]:
+        _overlay_cache["rules"] = _rules_feed.overlay()
+        _overlay_cache["mtime"] = mtime
+    return _overlay_cache["rules"]
+
+
+def active_rules() -> list:
+    """Built-in rules plus any synced feed rules."""
+    return RULES + _overlay_rules()
 
 
 def _cache_version() -> str:
@@ -623,8 +646,8 @@ def _scan_text(text: str, fp: Path, lang: str) -> list[Finding]:
     per_rule = limits.resolve("GRIM_MAX_RULE_MATCHES", MAX_RULE_MATCHES)
     per_file = limits.resolve("GRIM_MAX_FILE_FINDINGS", MAX_FILE_FINDINGS)
 
-    for rid, pat, sev, title, desc, fix, langs in RULES:
-        if lang not in langs:
+    for rid, pat, sev, title, desc, fix, langs in active_rules():
+        if "all" not in langs and lang not in langs:
             continue
         hits = 0
         for m in pat.finditer(text):
