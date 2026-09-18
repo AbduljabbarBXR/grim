@@ -72,6 +72,14 @@ def main(argv: list[str] | None = None) -> int:
     p_watch.add_argument("--format", choices=["md", "json", "sarif"], default="md")
     p_watch.add_argument("--deep", action="store_true")
 
+    p_fix = sub.add_parser("fix_plan", help="turn findings into a remediation plan and diffs")
+    p_fix.add_argument("path")
+    p_fix.add_argument("--format", choices=["md", "json"], default="md")
+    p_fix.add_argument("--out", default=None)
+    p_fix.add_argument("--no-network", action="store_true")
+    p_fix.add_argument("--no-patches", action="store_true")
+    p_fix.add_argument("--deep", action="store_true")
+
     p_plan = sub.add_parser("plan", help="show the audit plan for a target")
     p_plan.add_argument("path")
     p_plan.add_argument("--no-network", action="store_true")
@@ -168,6 +176,27 @@ def main(argv: list[str] | None = None) -> int:
         if action == "diff":
             return _emit(payload, args.format, None)
         return _print_json(payload)
+    if args.command == "fix_plan":
+        plan = call_tool("fix_plan", {
+            "path": args.path,
+            "network": not args.no_network,
+            "include_patches": not args.no_patches,
+            "deep": bool(args.deep),
+        })
+        if not plan.get("ok"):
+            print(f"error: {plan.get('error')}", file=sys.stderr)
+            return 1
+        if args.format == "json":
+            text = json.dumps(plan, indent=2, default=str)
+        else:
+            text = _render_fix_plan(plan)
+        if args.out:
+            with open(args.out, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            print(f"wrote {args.out}")
+        else:
+            print(text)
+        return 0
     if args.command == "plan":
         return _print_json(call_tool("plan", {"path": args.path,
                                               "network": not args.no_network,
@@ -205,6 +234,27 @@ def main(argv: list[str] | None = None) -> int:
 def _print_json(payload: dict) -> int:
     print(json.dumps(payload, indent=2, default=str))
     return 0 if payload.get("ok") else 1
+
+
+def _render_fix_plan(plan: dict) -> str:
+    s = plan.get("summary", {})
+    lines = ["# GRIM Fix Plan", "", f"- findings: {s.get('total', 0)} | steps: {s.get('steps', 0)} | patchable: {s.get('patchable', 0)}", ""]
+    for st in plan.get("steps", []):
+        loc = str(st.get("file", "")) + (f":{st['line']}" if st.get("line") else "")
+        review = " (review)" if st.get("requires_review") else ""
+        lines.append(f"## [{str(st.get('severity', '')).upper()}] {st.get('title', '')}{review}")
+        lines.append(f"- Location: `{loc}`")
+        if st.get("action"):
+            lines.append(f"- Action: {st['action']}")
+        if st.get("evidence"):
+            lines.append(f"- Evidence: `{str(st['evidence'])[:160]}`")
+        lines.append("")
+    if plan.get("patch"):
+        lines.append("## Suggested patch")
+        lines.append("```diff")
+        lines.append(plan["patch"].rstrip())
+        lines.append("```")
+    return "\n".join(lines)
 
 
 def _build_tool_args(name: str, args: argparse.Namespace) -> dict:

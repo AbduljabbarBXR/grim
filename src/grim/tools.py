@@ -10,6 +10,7 @@ from .core import ledger as _ledger
 from .core.attack import enrich
 from .core.detector import detect_stack
 from .core.findings import SEVERITY_ORDER, Finding, make_id, rank, summarize
+from .core.fixplan import build_fix_plan
 from .core.planner import build_plan
 from .core.report import render_json, render_markdown, render_sarif
 from .engines.codepatterns import scan_code
@@ -117,6 +118,26 @@ def _tool_watch(args: dict) -> dict:
         return _findings_payload(findings, meta)
 
     return {"ok": False, "error": f"unknown action: {action}"}
+
+
+def _tool_fix_plan(args: dict) -> dict:
+    if args.get("findings"):
+        findings = [_finding_from_dict(d) for d in args["findings"]]
+        root = args.get("root")
+    elif args.get("path"):
+        payload = _tool_scan(
+            {
+                "path": args["path"],
+                "tools": args.get("tools"),
+                "network": bool(args.get("network", False)),
+                "deep": bool(args.get("deep")),
+            }
+        )
+        findings = [_finding_from_dict(d) for d in payload.get("findings", [])]
+        root = args["path"]
+    else:
+        return {"ok": False, "error": "path or findings required"}
+    return build_fix_plan(findings, root=root, include_patches=bool(args.get("include_patches", True)))
 
 
 def _tool_scan_code(args: dict) -> dict:
@@ -403,6 +424,22 @@ TOOLS: dict[str, dict[str, Any]] = {
             ["path"],
         ),
         "handler": _tool_watch,
+    },
+    "fix_plan": {
+        "description": "Turn findings into an ordered remediation plan, with safe unified-diff patches where a fix is deterministic. Accepts findings or a path to scan.",
+        "schema": _schema(
+            {
+                **PATH_PROP,
+                "findings": {"type": "array", "items": {"type": "object"}, "description": "Findings to plan for (alternative to path)"},
+                "root": {"type": "string", "description": "Root for relative finding paths"},
+                "include_patches": {"type": "boolean", "description": "Emit unified diffs for deterministic fixes (default true)"},
+                "tools": {"type": "array", "items": {"type": "string"}, "description": "Scan subset when planning from a path"},
+                "network": {"type": "boolean", "description": "Allow dependency CVE lookup during the scan"},
+                "deep": {"type": "boolean", "description": "Deep scan when planning from a path"},
+            },
+            [],
+        ),
+        "handler": _tool_fix_plan,
     },
     "plan": {
         "description": "Build an ordered, explainable audit plan for a target: which tools to run and why, based on detected stack and inputs.",
