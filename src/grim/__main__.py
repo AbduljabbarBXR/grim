@@ -64,6 +64,14 @@ def main(argv: list[str] | None = None) -> int:
     p_ci.add_argument("--no-network", action="store_true")
     p_ci.add_argument("--deep", action="store_true")
 
+    p_watch = sub.add_parser("watch", help="save a baseline and detect drift")
+    p_watch.add_argument("path")
+    p_watch.add_argument("--save", action="store_true", help="save/refresh the baseline")
+    p_watch.add_argument("--status", action="store_true", help="show baseline info")
+    p_watch.add_argument("--baseline", default=None, help="baseline JSON path")
+    p_watch.add_argument("--format", choices=["md", "json", "sarif"], default="md")
+    p_watch.add_argument("--deep", action="store_true")
+
     p_plan = sub.add_parser("plan", help="show the audit plan for a target")
     p_plan.add_argument("path")
     p_plan.add_argument("--no-network", action="store_true")
@@ -151,6 +159,15 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(text)
         return code
+    if args.command == "watch":
+        action = "save" if args.save else "status" if args.status else "diff"
+        tool_args: dict = {"path": args.path, "action": action, "deep": bool(args.deep)}
+        if args.baseline:
+            tool_args["baseline_path"] = args.baseline
+        payload = call_tool("watch", tool_args)
+        if action == "diff":
+            return _emit(payload, args.format, None)
+        return _print_json(payload)
     if args.command == "plan":
         return _print_json(call_tool("plan", {"path": args.path,
                                               "network": not args.no_network,

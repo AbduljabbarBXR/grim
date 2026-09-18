@@ -45,13 +45,54 @@ def diff_artifacts(path_a: str, path_b: str, classify_limit: int = MAX_CLASSIFY,
     info: dict = {}
     source_a = open_source(path_a, nested=deep)
     manifest_a_raw = _manifest(source_a, info)
+    root_a = _common_root(manifest_a_raw)
     deep_a = source_a.stats() if deep and hasattr(source_a, "stats") else {}
+    if getattr(source_a, "error", None):
+        info.setdefault("errors", []).append(f"baseline: {source_a.error}")
     source_a.close()
 
     source_b = open_source(path_b, nested=deep)
     manifest_b_raw = _manifest(source_b, info)
+    deep_b = source_b.stats() if deep and hasattr(source_b, "stats") else {}
+    return _compare_manifests(
+        manifest_a_raw, manifest_b_raw, source_b,
+        path_a=path_a, path_b=path_b, root_a=root_a,
+        classify_limit=classify_limit, deep=deep, deep_a=deep_a, deep_b=deep_b, info=info,
+    )
 
-    root_a = _common_root(manifest_a_raw)
+
+def diff_against_manifest(
+    baseline: dict,
+    path: str,
+    classify_limit: int = MAX_CLASSIFY,
+    deep: bool = False,
+) -> tuple[list[Finding], dict]:
+    """Compare a saved baseline manifest against the current state of ``path``."""
+    info: dict = {}
+    source_b = open_source(path, nested=deep)
+    manifest_b_raw = _manifest(source_b, info)
+    deep_b = source_b.stats() if deep and hasattr(source_b, "stats") else {}
+    return _compare_manifests(
+        baseline.get("manifest") or {}, manifest_b_raw, source_b,
+        path_a=baseline.get("target") or "baseline", path_b=path, root_a=baseline.get("root"),
+        classify_limit=classify_limit, deep=deep, deep_a={}, deep_b=deep_b, info=info,
+    )
+
+
+def _compare_manifests(
+    manifest_a_raw: dict,
+    manifest_b_raw: dict,
+    source_b,
+    *,
+    path_a: str,
+    path_b: str,
+    root_a: str | None,
+    classify_limit: int,
+    deep: bool,
+    deep_a: dict,
+    deep_b: dict,
+    info: dict,
+) -> tuple[list[Finding], dict]:
     root_b = _common_root(manifest_b_raw)
     manifest_a = _normalize(manifest_a_raw, root_a)
     manifest_b = _normalize(manifest_b_raw, root_b)
@@ -104,8 +145,6 @@ def diff_artifacts(path_a: str, path_b: str, classify_limit: int = MAX_CLASSIFY,
             source_b.close()
     else:
         source_b.close()
-
-    deep_b = source_b.stats() if deep and hasattr(source_b, "stats") else {}
 
     # changed executable marker (name level) when content scan did not flag it
     for rel in changed:
@@ -165,10 +204,10 @@ def diff_artifacts(path_a: str, path_b: str, classify_limit: int = MAX_CLASSIFY,
         )
     )
     reasons: list[str] = []
-    errors: list[str] = []
-    for side, src, label in ((deep_a, source_a, "baseline"), (deep_b, source_b, "current")):
-        if getattr(src, "error", None):
-            errors.append(f"{label}: {src.error}")
+    errors: list[str] = list(info.get("errors", []))
+    if getattr(source_b, "error", None):
+        errors.append(f"current: {source_b.error}")
+    for side in (deep_a, deep_b):
         errors.extend(side.get("errors", []))
     if info.get("manifest_truncated"):
         reasons.append("manifest entry limit reached")
@@ -197,6 +236,26 @@ def build_manifest(path: str, deep: bool = False) -> dict:
         return _manifest(source)
     finally:
         source.close()
+
+
+def snapshot(path: str, deep: bool = False) -> tuple[dict, str | None, dict]:
+    """Return (manifest, common_root, stats) for a target."""
+    info: dict = {}
+    source = open_source(path, nested=deep)
+    try:
+        manifest = _manifest(source, info)
+        root = _common_root(manifest)
+        deep_stats = source.stats() if deep and hasattr(source, "stats") else {}
+        stats = {
+            "entries": len(manifest),
+            "root": root,
+            "deep": deep_stats,
+            "error": getattr(source, "error", None),
+            "truncated": bool(info.get("manifest_truncated")),
+        }
+    finally:
+        source.close()
+    return manifest, root, stats
 
 
 def _manifest(source: Source, info: dict | None = None) -> dict:

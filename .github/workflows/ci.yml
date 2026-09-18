@@ -28,6 +28,23 @@ jobs:
       - name: Run test suite (stdlib runner)
         run: python tests/run_all.py
 
+  cross-platform:
+    name: tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile check
+        run: python -m compileall -q src
+      - name: Run test suite (stdlib runner)
+        run: python tests/run_all.py
+
   lint:
     name: lint
     runs-on: ubuntu-latest

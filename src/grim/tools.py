@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from . import sbom as _sbom
+from .core import baseline as _baseline
 from .core import ledger as _ledger
 from .core.attack import enrich
 from .core.detector import detect_stack
@@ -16,6 +17,7 @@ from .engines.deps import audit_deps
 from .engines.diffscan import diff_artifacts
 from .engines.exposure import audit_exposure
 from .engines.secrets import scan_secrets, scan_secrets_history
+from .engines.watch import save_baseline, watch_diff
 from .feeds import iocs as _iocs
 
 Handler = Callable[[dict], dict]
@@ -86,6 +88,35 @@ def _tool_scan_secrets(args: dict) -> dict:
         findings.extend(scan_secrets_history(args["path"]))
         history = True
     return _findings_payload(findings, _meta("grim-secrets", args["path"], stats, history=history))
+
+
+def _tool_watch(args: dict) -> dict:
+    action = (args.get("action") or "diff").lower()
+    target = args.get("path") or ""
+    baseline_path = args.get("baseline_path")
+    deep = bool(args.get("deep"))
+
+    if action == "save":
+        if not target:
+            return {"ok": False, "error": "path is required for action=save"}
+        info = save_baseline(target, deep=deep, path=baseline_path)
+        return {"ok": True, "action": "save", **info}
+
+    if action == "status":
+        saved = _baseline.load(baseline_path, target)
+        return {"ok": True, "action": "status", **_baseline.describe(saved)}
+
+    if action == "diff":
+        if not target:
+            return {"ok": False, "error": "path is required for action=diff"}
+        try:
+            findings, stats, saved = watch_diff(target, deep=deep, baseline_path=baseline_path)
+        except FileNotFoundError as exc:
+            return {"ok": False, "error": str(exc)}
+        meta = _meta("grim-watch", target, stats, baseline=saved.get("target"), baseline_created=saved.get("created"))
+        return _findings_payload(findings, meta)
+
+    return {"ok": False, "error": f"unknown action: {action}"}
 
 
 def _tool_scan_code(args: dict) -> dict:
@@ -359,6 +390,19 @@ TOOLS: dict[str, dict[str, Any]] = {
             ["path_a", "path_b"],
         ),
         "handler": _tool_diff_artifacts,
+    },
+    "watch": {
+        "description": "Persistent baseline and drift detection. action=save stores the current file manifest; action=diff compares the target to the saved baseline; action=status shows baseline info.",
+        "schema": _schema(
+            {
+                **PATH_PROP,
+                "action": {"type": "string", "enum": ["save", "diff", "status"], "description": "Watch operation (default diff)"},
+                "baseline_path": {"type": "string", "description": "Override the baseline JSON path"},
+                "deep": {"type": "boolean", "description": "Include nested archives"},
+            },
+            ["path"],
+        ),
+        "handler": _tool_watch,
     },
     "plan": {
         "description": "Build an ordered, explainable audit plan for a target: which tools to run and why, based on detected stack and inputs.",

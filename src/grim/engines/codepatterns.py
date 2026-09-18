@@ -20,6 +20,8 @@ from .flow import rules_hash as _flow_rules_hash
 MAX_FILE_BYTES = 1024 * 1024
 MAX_FILES = 20000
 MAX_FINDINGS = 800
+MAX_RULE_MATCHES = 10
+MAX_FILE_FINDINGS = 200
 
 CACHE_DIR = Path(os.environ.get("GRIM_CACHE", Path.home() / ".cache" / "grim")) / "code"
 CACHE_MAX_ENTRIES = 50000
@@ -618,32 +620,39 @@ def _scan_file(fp: Path, lang: str) -> list[Finding]:
 
 def _scan_text(text: str, fp: Path, lang: str) -> list[Finding]:
     out: list[Finding] = []
+    per_rule = limits.resolve("GRIM_MAX_RULE_MATCHES", MAX_RULE_MATCHES)
+    per_file = limits.resolve("GRIM_MAX_FILE_FINDINGS", MAX_FILE_FINDINGS)
 
     for rid, pat, sev, title, desc, fix, langs in RULES:
         if lang not in langs:
             continue
-        m = pat.search(text)
-        if not m:
-            continue
-        line = text[: m.start()].count("\n") + 1
-        out.append(
-            Finding(
-                id=make_id("CODE", rid, str(fp)),
-                severity=sev,
-                confidence=0.9 if rid in {"php-client-mimes", "php-request-exec", "php-include-request", "js-child-process-exec"} else 0.7,
-                category="CWE-94" if sev == "critical" else "CWE-20",
-                owasp="A03:2021",
-                title=title,
-                description=desc,
-                location={"file": str(fp), "line": line},
-                evidence=m.group(0)[:160],
-                remediation=fix,
-                engine="grim-codepatterns",
-                tags=["sast", lang],
+        hits = 0
+        for m in pat.finditer(text):
+            line = text[: m.start()].count("\n") + 1
+            out.append(
+                Finding(
+                    id=make_id("CODE", f"{rid}@{line}", str(fp)),
+                    severity=sev,
+                    confidence=0.9 if rid in {"php-client-mimes", "php-request-exec", "php-include-request", "js-child-process-exec"} else 0.7,
+                    category="CWE-94" if sev == "critical" else "CWE-20",
+                    owasp="A03:2021",
+                    title=title,
+                    description=desc,
+                    location={"file": str(fp), "line": line},
+                    evidence=m.group(0)[:160],
+                    remediation=fix,
+                    engine="grim-codepatterns",
+                    tags=["sast", lang],
+                )
             )
-        )
+            hits += 1
+            if limits.reached(hits, per_rule) or limits.reached(len(out), per_file):
+                break
+        if limits.reached(len(out), per_file):
+            break
 
     # hardcoded public IP URLs in code (stager/backdoor indicator)
+    ip_hits = 0
     for m in IP_URL.finditer(text):
         ip = m.group(1)
         if PRIVATE_IP.match(ip):
@@ -651,7 +660,7 @@ def _scan_text(text: str, fp: Path, lang: str) -> list[Finding]:
         line = text[: m.start()].count("\n") + 1
         out.append(
             Finding(
-                id=make_id("CODE", "hardcoded-ip", f"{fp}:{ip}"),
+                id=make_id("CODE", f"hardcoded-ip@{line}", f"{fp}:{ip}"),
                 severity="medium",
                 confidence=0.6,
                 category="CWE-912",
@@ -665,5 +674,7 @@ def _scan_text(text: str, fp: Path, lang: str) -> list[Finding]:
                 tags=["sast", "suspicious"],
             )
         )
-        break  # one per file
+        ip_hits += 1
+        if limits.reached(ip_hits, per_rule) or limits.reached(len(out), per_file):
+            break
     return out
