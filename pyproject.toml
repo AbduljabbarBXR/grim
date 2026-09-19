@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "grim-mcp"
-version = "0.5.0"
+version = "0.5.1"
 description = "Security audit MCP server: finds code, dependency, exposure, secrets, and active-compromise gaps across any stack"
 readme = "README.md"
 requires-python = ">=3.10"

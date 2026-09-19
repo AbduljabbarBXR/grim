@@ -29,14 +29,40 @@ Handler = Callable[[dict], dict]
 
 
 def _meta(engine: str, target: str, stats: dict | None = None, **extra: Any) -> dict:
-    """Build tool meta and surface any scan truncation."""
+    """Build tool meta and surface scan truncation, errors, and warnings."""
     meta: dict[str, Any] = {"engine": engine, "target": target, **extra}
     if stats:
         meta["stats"] = stats
         if stats.get("truncated"):
             meta["truncated"] = True
             meta["truncation_reasons"] = stats.get("reasons", [])
+        if stats.get("errors"):
+            meta["scan_errors"] = stats["errors"]
+        if stats.get("warnings"):
+            meta["scan_warnings"] = stats["warnings"]
     return meta
+
+
+def _scan_error_finding(meta: dict) -> Finding:
+    warnings = meta.get("scan_warnings") or []
+    evidence = "; ".join(warnings) if warnings else "archive could not be read"
+    return Finding(
+        id=make_id("SCANERR", str(meta.get("target", "scan")), evidence[:120]),
+        severity="low",
+        confidence=1.0,
+        category="CWE-1059",
+        owasp="A09:2021",
+        title="Scan completed with unreadable archives",
+        description=(
+            "One or more archives could not be parsed and were not fully scanned. "
+            "The rest of the target was scanned normally."
+        ),
+        location={"file": str(meta.get("target", ""))},
+        evidence=evidence[:300],
+        remediation="Verify the archive is intact, or extract it and scan the extracted directory.",
+        engine="grim",
+        tags=["scan-error", "incomplete"],
+    )
 
 
 def _truncation_finding(meta: dict) -> Finding:
@@ -64,6 +90,8 @@ def _findings_payload(findings: list[Finding], meta: dict | None = None) -> dict
     meta = meta or {}
     if meta.get("truncated"):
         findings = list(findings) + [_truncation_finding(meta)]
+    if meta.get("scan_errors"):
+        findings = list(findings) + [_scan_error_finding(meta)]
     ranked = enrich(rank(findings))
     return {
         "ok": True,
@@ -329,6 +357,7 @@ def _tool_scan(args: dict) -> dict:
     ran: list[str] = []
     sub_stats: dict[str, dict] = {}
     reasons: list[str] = []
+    errors: list[str] = []
 
     def want(name: str) -> bool:
         return not selected or name in selected
@@ -338,6 +367,8 @@ def _tool_scan(args: dict) -> dict:
         if stats.get("truncated"):
             for r in stats.get("reasons", []):
                 reasons.append(f"{name}: {r}")
+        for e in stats.get("errors", []):
+            errors.append(f"{name}: {e}")
 
     if want("exposure"):
         s: dict = {}
@@ -370,6 +401,9 @@ def _tool_scan(args: dict) -> dict:
     if reasons:
         meta["truncated"] = True
         meta["truncation_reasons"] = reasons
+    if errors:
+        meta["scan_errors"] = errors
+        meta["scan_warnings"] = [f"unreadable archive: {e}" for e in errors]
     return _findings_payload(findings, meta)
 
 
@@ -396,6 +430,18 @@ def _tool_ci_scan(args: dict) -> dict:
     payload["fail_on"] = fail_on
     payload["failing"] = failing
     payload["exit_code"] = 1 if failing else 0
+
+    fmt = (args.get("format") or "").lower()
+    if fmt in ("json", "md", "markdown", "sarif"):
+        findings = [_finding_from_dict(d) for d in payload.get("findings", [])]
+        meta = payload.get("meta", {})
+        if fmt == "sarif":
+            payload["report"] = render_sarif(findings, meta)
+        elif fmt == "json":
+            payload["report"] = render_json(findings, meta)
+        else:
+            payload["report"] = render_markdown(findings, meta)
+        payload["format"] = fmt
     return payload
 
 
@@ -647,6 +693,7 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "tools": {"type": "array", "items": {"type": "string"}, "description": "Subset: exposure, secrets, code, deps, iocs"},
                 "network": {"type": "boolean", "description": "Allow dependency CVE lookup (default true)"},
                 "deep": {"type": "boolean", "description": "Nested archives + IoC hash matching"},
+                "format": {"type": "string", "enum": ["sarif", "json", "md"], "description": "Also return a rendered report under 'report' (sarif for pipelines)"},
             },
             ["path"],
         ),

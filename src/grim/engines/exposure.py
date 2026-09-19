@@ -9,9 +9,11 @@ polyglot webshells, webshell/stager content indicators.
 
 from __future__ import annotations
 
+import gzip
 import os
 import re
 import shutil
+import struct
 import tarfile
 import tempfile
 import time
@@ -99,6 +101,9 @@ class Source:
 
     label: str = "source"
     error: str | None = None
+    # Filesystem context of the scan root (used so web-pathness survives when the
+    # target root is itself a web directory). Empty for archives.
+    prefix: str = ""
 
     def iter_items(self) -> Iterator[tuple[Entry, Callable[[int], bytes]]]:
         """Yield (entry, reader) exactly once per entry, in stream order."""
@@ -116,6 +121,7 @@ class DirSource(Source):
     def __init__(self, root: str):
         self.root = Path(root)
         self.label = str(self.root)
+        self.prefix = str(self.root).replace(os.sep, "/").strip("/")
 
     def iter_items(self) -> Iterator[tuple[Entry, Callable[[int], bytes]]]:
         for r, dirs, files in os.walk(self.root):
@@ -237,6 +243,46 @@ class ArchiveSource(Source):
                     yield entry, reader
 
 
+def _gzip_uncompressed_size(path: str) -> int | None:
+    """Read the gzip ISIZE trailer (uncompressed size mod 2^32)."""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(-4, os.SEEK_END)
+            return struct.unpack("<I", fh.read(4))[0]
+    except (OSError, struct.error):
+        return None
+
+
+class GzipSource(Source):
+    """A plain gzip stream (for example a rotated log), not a tar archive.
+
+    Yields the single decompressed member so its content can be scanned instead of
+    being reported as an unreadable tar archive.
+    """
+
+    def __init__(self, path: str):
+        self.archive = path
+        self.label = str(path)
+        name = Path(path).name
+        self._name = name[:-3] if name.lower().endswith(".gz") else name
+        self._size = _gzip_uncompressed_size(path)
+        if self._size is None:
+            try:
+                self._size = os.path.getsize(path)
+            except OSError:
+                self._size = 0
+
+    def iter_items(self) -> Iterator[tuple[Entry, Callable[[int], bytes]]]:
+        def reader(limit: int, _p: str = self.archive) -> bytes:
+            try:
+                with gzip.open(_p, "rb") as fh:
+                    return fh.read(limit)
+            except (OSError, EOFError):
+                return b""
+
+        yield Entry(path=self._name, size=self._size), reader
+
+
 def open_source(
     path: str,
     nested: bool = False,
@@ -249,7 +295,10 @@ def open_source(
         raise FileNotFoundError(path)
     if p.is_dir():
         return DirSource(path)
-    if _archive_kind(str(path)):
+    kind = _archive_kind(str(path))
+    if kind == "gzip":
+        return GzipSource(path)
+    if kind:
         if nested:
             return DeepArchiveSource(
                 path, max_depth=max_depth, max_bytes=max_bytes, max_entry_bytes=max_entry_bytes
@@ -366,7 +415,7 @@ class DeepArchiveSource(Source):
                 yield Entry(path=path, size=temp_path.stat().st_size), _file_reader(temp_path)
                 try:
                     if depth < self._state.max_depth:
-                        inner = ArchiveSource(str(temp_path))
+                        inner = open_source(str(temp_path))
                         try:
                             yield from self._walk(inner, path + "/", depth + 1)
                         finally:
@@ -478,10 +527,13 @@ def audit_exposure(
             if entry.is_dir:
                 _check_dir(entry, findings)
                 continue
-            _check_by_name(entry, findings)
+            # Web context includes the scanned root's own path, so pointing GRIM at
+            # public/uploads directly still recognises those files as web served.
+            ctx = f"{source.prefix}/{entry.path}" if source.prefix else entry.path
+            _check_by_name(entry, findings, context=ctx)
             if entry.size <= 0:
                 continue
-            if not _in_web_path(entry.path):
+            if not _in_web_path(ctx):
                 continue
             if limits.reached(reads, read_limit):
                 if not read_capped:
@@ -507,8 +559,11 @@ def audit_exposure(
             reasons.append("nested-archive byte budget exhausted")
         if s["oversize_skipped"]:
             reasons.append("nested archive exceeded the per-archive size cap")
-    for err in errors:
-        reasons.append(f"unreadable archive: {err}")
+
+    # Unreadable archives are reported as errors, not as truncation: the scan itself
+    # completed. Truncation is reserved for genuine coverage caps.
+    warnings = [f"unreadable archive: {e}" for e in errors]
+    reasons = list(dict.fromkeys(reasons))
 
     if stats is not None:
         stats.update(
@@ -519,6 +574,7 @@ def audit_exposure(
                 "truncated": bool(reasons),
                 "reasons": reasons,
                 "errors": errors,
+                "warnings": warnings,
                 "elapsed_seconds": limits.elapsed_str(start),
             }
         )
@@ -548,13 +604,14 @@ def _check_dir(entry: Entry, out: list[Finding]) -> None:
         )
 
 
-def _check_by_name(entry: Entry, out: list[Finding]) -> None:
+def _check_by_name(entry: Entry, out: list[Finding], context: str | None = None) -> None:
     rel = entry.path
     name = entry.name
     lower = name.lower()
-    if not _in_web_path(rel):
+    ctx = context or rel
+    if not _in_web_path(ctx):
         return
-    segs = [s.lower() for s in rel.split("/")[:-1]]
+    segs = [s.lower() for s in ctx.split("/")[:-1]]
     if any(s in SOURCE_SEGMENTS for s in segs):
         return
     in_upload = any(s in UPLOAD_SEGMENTS for s in segs)
@@ -678,8 +735,11 @@ def _archive_kind(path: str) -> str | None:
     lowered = path.lower()
     if lowered.endswith(".zip"):
         return "zip"
-    if lowered.endswith((".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".gz")):
+    if lowered.endswith((".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz")):
         return "tar"
+    # A bare .gz is a single gzip stream (for example a rotated log), never a tar.
+    if lowered.endswith(".gz"):
+        return "gzip"
     return None
 
 

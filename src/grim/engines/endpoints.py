@@ -24,9 +24,11 @@ SKIP_DIRS = {
 }
 
 AUTH_MARKERS = re.compile(
-    r"(requireauth|isauthenticated|is_admin|authorize|passport|jwt|bearer|middleware\(['\"]auth"
-    r"|auth:|auth\(|ensureloggedin|permission_required|login_required|@login_required"
-    r"|verifytoken|checkauth)",
+    r"(requireauth|require_auth|isauthenticated|is_admin|authorize|passport|jwt|bearer"
+    r"|authmiddleware|authenticate|ensureauthenticated|ensureloggedin"
+    r"|middleware\(\s*\[?\s*['\"]auth"
+    r"|middleware['\"]?\s*=>\s*\[?[^\]]{0,80}['\"]auth"
+    r"|auth:|auth\(|permission_required|login_required|@login_required|verifytoken|checkauth)",
     re.I,
 )
 INPUT_MARKERS = re.compile(
@@ -132,7 +134,7 @@ def _parse_file(fp: Path, root: Path) -> list[dict]:
     except OSError:
         return []
     if lang in ("js",):
-        return _regex_routes(text, fp, root, "express", EXPRESS)
+        return _parse_express(text, fp, root)
     if lang == "php":
         return _parse_laravel(text, fp, root)
     if lang == "python":
@@ -147,13 +149,70 @@ def _parse_file(fp: Path, root: Path) -> list[dict]:
 
 
 def _parse_laravel(text: str, fp: Path, root: Path) -> list[dict]:
+    """Laravel routes, tracking auth inherited from enclosing middleware groups.
+
+    Handles both ``middleware([...])`` on the route (including a chained call on the
+    next line) and group middleware declared as ``Route::group([...])`` or
+    ``Route::middleware([...])->group(function () { ... })``.
+    """
+    lines = text.splitlines()
     out: list[dict] = []
-    for i, line in enumerate(text.splitlines()):
-        if "Route" not in line:
-            continue
-        for m in LARAVEL_CHAIN.finditer(line):
-            out.append(_from_line(m.group(1).upper(), m.group(2), line, fp, root, i + 1, "laravel"))
+    group_auth: list[bool] = []
+    pending: str | None = None
+
+    for i, line in enumerate(lines):
+        if "group" in line and re.search(r"(?:Route\s*::|->)\s*(?:middleware\s*\([^)]*\)\s*->\s*)?group\s*\(", line):
+            pending = line
+        elif pending is not None:
+            pending += " " + line
+
+        if "Route" in line:
+            context = _statement_context(lines, i)
+            inherited = any(group_auth)
+            for m in LARAVEL_CHAIN.finditer(line):
+                out.append(
+                    _from_line(m.group(1).upper(), m.group(2), line, fp, root, i + 1, "laravel",
+                               context=context, auth_extra=inherited)
+                )
+
+        if pending is not None and "{" in line:
+            group_auth.append(bool(AUTH_MARKERS.search(pending)))
+            pending = None
+        for _ in range(line.count("}")):
+            if group_auth:
+                group_auth.pop()
     return out
+
+
+def _parse_express(text: str, fp: Path, root: Path) -> list[dict]:
+    """Express routes, inheriting auth from any preceding ``app.use(auth)``."""
+    lines = text.splitlines()
+    out: list[dict] = []
+    file_auth = False
+    for i, line in enumerate(lines):
+        if re.search(r"\b(?:app|router|server|api)\s*\.\s*use\s*\(", line) and AUTH_MARKERS.search(line):
+            file_auth = True
+        if not EXPRESS.search(line):
+            continue
+        for m in EXPRESS.finditer(line):
+            meth = m.group(1).upper()
+            if meth == "USE":
+                continue
+            out.append(
+                _from_line(meth, m.group(2), line, fp, root, i + 1, "express",
+                           auth_extra=file_auth)
+            )
+    return out
+
+
+def _statement_context(lines: list[str], i: int, max_lines: int = 3) -> str:
+    """Join a route statement with its chained continuation lines (until a semicolon)."""
+    text = lines[i]
+    k = i
+    while not text.rstrip().endswith(";") and k + 1 < len(lines) and (k - i) < max_lines:
+        k += 1
+        text += " " + lines[k]
+    return text
 
 
 def _parse_go(text: str, fp: Path, root: Path) -> list[dict]:
@@ -166,9 +225,20 @@ def _parse_go(text: str, fp: Path, root: Path) -> list[dict]:
     return out
 
 
-def _from_line(method: str, route: str, line: str, fp: Path, root: Path, lineno: int, framework: str) -> dict:
-    auth = bool(AUTH_MARKERS.search(line))
-    inputs = bool(INPUT_MARKERS.search(line))
+def _from_line(
+    method: str,
+    route: str,
+    line: str,
+    fp: Path,
+    root: Path,
+    lineno: int,
+    framework: str,
+    context: str | None = None,
+    auth_extra: bool = False,
+) -> dict:
+    probe = context if context is not None else line
+    auth = auth_extra or bool(AUTH_MARKERS.search(probe))
+    inputs = bool(INPUT_MARKERS.search(probe))
     return _endpoint(framework, method, route, fp, root, lineno, auth, inputs)
 
 

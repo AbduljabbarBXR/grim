@@ -41,7 +41,7 @@ def _entry_hash(entry: Entry, reader) -> str:
     return hashlib.sha256(f"{entry.size}|".encode() + data).hexdigest()[:24]
 
 
-def diff_artifacts(path_a: str, path_b: str, classify_limit: int = MAX_CLASSIFY, deep: bool = False) -> tuple[list[Finding], dict]:
+def diff_artifacts(path_a: str, path_b: str, classify_limit: int = MAX_CLASSIFY, deep: bool = False, list_all: bool = False) -> tuple[list[Finding], dict]:
     info: dict = {}
     source_a = open_source(path_a, nested=deep)
     manifest_a_raw = _manifest(source_a, info)
@@ -58,6 +58,7 @@ def diff_artifacts(path_a: str, path_b: str, classify_limit: int = MAX_CLASSIFY,
         manifest_a_raw, manifest_b_raw, source_b,
         path_a=path_a, path_b=path_b, root_a=root_a,
         classify_limit=classify_limit, deep=deep, deep_a=deep_a, deep_b=deep_b, info=info,
+        list_all=list_all,
     )
 
 
@@ -66,6 +67,7 @@ def diff_against_manifest(
     path: str,
     classify_limit: int = MAX_CLASSIFY,
     deep: bool = False,
+    list_all: bool = True,
 ) -> tuple[list[Finding], dict]:
     """Compare a saved baseline manifest against the current state of ``path``."""
     info: dict = {}
@@ -76,6 +78,7 @@ def diff_against_manifest(
         baseline.get("manifest") or {}, manifest_b_raw, source_b,
         path_a=baseline.get("target") or "baseline", path_b=path, root_a=baseline.get("root"),
         classify_limit=classify_limit, deep=deep, deep_a={}, deep_b=deep_b, info=info,
+        list_all=list_all,
     )
 
 
@@ -92,6 +95,8 @@ def _compare_manifests(
     deep_a: dict,
     deep_b: dict,
     info: dict,
+    list_all: bool = False,
+    list_limit: int = 200,
 ) -> tuple[list[Finding], dict]:
     root_b = _common_root(manifest_b_raw)
     manifest_a = _normalize(manifest_a_raw, root_a)
@@ -137,7 +142,8 @@ def _compare_manifests(
                 if entry.size > 0 and (_in_web_path(entry.path) or _looks_suspicious_name(entry.path)):
                     data = reader(min(READ_LIMIT, entry.size + 1))
                 norm_entry = Entry(path=npath, size=entry.size)
-                for f in _classify(norm_entry, data):
+                ctx = f"{source_b.prefix}/{entry.path}" if getattr(source_b, "prefix", "") else entry.path
+                for f in _classify(norm_entry, data, context=ctx):
                     f.tags.append("added" if npath in added_set else "changed")
                     findings.append(f)
                 stats["classified"] += 1
@@ -185,6 +191,34 @@ def _compare_manifests(
                 )
             )
 
+    # itemize drift paths so a monitoring user sees names, not just counts
+    if list_all:
+        flagged = {str(f.location.get("file", "")) for f in findings}
+        for kind, paths, sev in (("added", added, "medium"), ("changed", changed, "medium"), ("removed", removed, "low")):
+            for rel in paths[:list_limit]:
+                if rel in flagged:
+                    continue
+                findings.append(
+                    Finding(
+                        id=make_id("DIFF", f"listed-{kind}", rel),
+                        severity=sev if kind != "added" else "medium",
+                        confidence=0.8,
+                        category="CWE-1059",
+                        owasp="A08:2021",
+                        title={"added": "File added since baseline", "changed": "File changed since baseline",
+                               "removed": "File removed since baseline"}[kind] + f": {rel}",
+                        description="Itemized drift entry between the baseline and the current state.",
+                        location={"file": rel},
+                        evidence=f"{kind}",
+                        remediation="Review the change against what you expect.",
+                        engine="grim-diff",
+                        tags=["drift", kind, "listed"],
+                    )
+                )
+    stats["added_paths"] = added[:list_limit]
+    stats["changed_paths"] = changed[:list_limit]
+    stats["removed_paths"] = removed[:list_limit]
+
     findings.append(
         Finding(
             id=make_id("DIFF", "summary", f"{path_a}|{path_b}"),
@@ -222,11 +256,12 @@ def _compare_manifests(
                 reasons.append("nested-archive byte budget exhausted")
             if side.get("oversize_skipped"):
                 reasons.append("nested archive exceeded the per-archive size cap")
-    for err in errors:
-        reasons.append(f"unreadable archive: {err}")
+    warnings = [f"unreadable archive: {e}" for e in errors]
+    reasons = list(dict.fromkeys(reasons))
     stats["truncated"] = bool(reasons)
     stats["reasons"] = reasons
     stats["errors"] = errors
+    stats["warnings"] = warnings
     return findings, stats
 
 
@@ -301,9 +336,9 @@ def _normalize(manifest: dict, root: str | None) -> dict:
     return {_strip_root(k, root): v for k, v in manifest.items()}
 
 
-def _classify(entry: Entry, data: bytes) -> list[Finding]:
+def _classify(entry: Entry, data: bytes, context: str | None = None) -> list[Finding]:
     out: list[Finding] = []
-    _check_by_name(entry, out)
+    _check_by_name(entry, out, context=context)
     if data:
         _check_content(entry, data, out)
     return out

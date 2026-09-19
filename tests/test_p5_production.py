@@ -98,8 +98,9 @@ def _test_unreadable_archive() -> None:
     bad.write_bytes(b"definitely not a gzip archive")
     s: dict = {}
     audit_exposure(str(bad), stats=s)
-    check("unreadable archive reported", s.get("truncated") is True and s.get("errors"))
-    check("unreadable reason present", any("unreadable" in r for r in s.get("reasons", [])))
+    check("unreadable archive reported as error", bool(s.get("errors")))
+    check("unreadable warning present", any("unreadable" in w for w in s.get("warnings", [])))
+    check("parse failure is not counted as truncation", s.get("truncated") is False)
 
 
 def _test_flow_line_numbers() -> None:
