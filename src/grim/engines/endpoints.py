@@ -64,6 +64,74 @@ def _strip_php_strings(line: str) -> str:
     return _PHP_STRING.sub("''", line)
 
 
+FRAMEWORK_MIDDLEWARE = (
+    "web", "api", "throttle", "cors", "bindings", "localization", "startsession",
+    "encryptcookies", "shareerrorsfromsession", "substitutebindings", "trustproxies",
+    "handlecors", "validatecsrftoken",
+)
+AUTH_MIDDLEWARE_HINTS = re.compile(
+    r"(auth|admin|role|can|permission|seller|verified|user|customer|subscribed|onboarded"
+    r"|jwt|passport|bearer|signed|password\.confirm|owner|staff|member)",
+    re.I,
+)
+
+
+def _middleware_names(text: str) -> list[str]:
+    """Extract middleware names from an assoc-array or call form."""
+    names: list[str] = []
+    for m in re.finditer(r"middleware['\"]?\s*=>\s*\[([^\]]*)\]", text):
+        names += re.findall(r"['\"]([^'\"]+)['\"]", m.group(1))
+    for m in re.finditer(r"middleware\s*\(\s*\[([^\]]*)\]", text):
+        names += re.findall(r"['\"]([^'\"]+)['\"]", m.group(1))
+    for m in re.finditer(r"middleware\s*\(\s*['\"]([^'\"]+)['\"]", text):
+        names.append(m.group(1))
+    return [n.strip().lower() for n in names if n.strip()]
+
+
+def _middleware_protected(text: str) -> bool:
+    names = _middleware_names(text)
+    if not names:
+        return False
+    if any(AUTH_MIDDLEWARE_HINTS.search(n) for n in names):
+        return True
+    # A route or group that declares custom middleware beyond the framework defaults
+    # is presumptively guarded (for example a domain specific 'seller' middleware).
+    return any(not n.startswith(FRAMEWORK_MIDDLEWARE) for n in names)
+
+
+def _group_protected(text: str) -> bool:
+    return bool(AUTH_MARKERS.search(text)) or _middleware_protected(text)
+
+
+def _strip_php_comments(text: str) -> str:
+    text = re.sub(r"/\*[\s\S]*?\*/", "", text)
+    text = re.sub(r"//[^\n]*", "", text)
+    text = re.sub(r"(?m)^\s*#[^\n]*", "", text)
+    return text
+
+
+def _registered_route_files(root: Path) -> set[str] | None:
+    """Route file basenames referenced by RouteServiceProvider or bootstrap/app.php.
+
+    Returns None when the project exposes no provider (scan everything). Commented
+    registrations are ignored, so an unreferenced routes file is not scanned.
+    """
+    if not root.is_dir():
+        return None
+    providers = list(root.rglob("RouteServiceProvider.php")) + list(root.rglob("bootstrap/app.php"))
+    if not providers:
+        return None
+    names: set[str] = set()
+    for f in providers:
+        try:
+            text = _strip_php_comments(f.read_text(encoding="utf-8", errors="ignore"))
+        except OSError:
+            continue
+        for m in re.finditer(r"routes/([A-Za-z0-9_./-]+\.php)", text):
+            names.add(Path(m.group(1)).name)
+    return names or None
+
+
 def _lang_of(fp: Path) -> str | None:
     name = fp.name.lower()
     suffix = fp.suffix.lower()
@@ -91,13 +159,14 @@ def inventory_endpoints(path: str, stats: dict | None = None) -> tuple[list[dict
         raise FileNotFoundError(path)
     max_files = limits.resolve("GRIM_MAX_FILES", MAX_FILES)
     files = [p] if p.is_file() else _walk(p, max_files)
+    registered = _registered_route_files(p) if p.is_dir() else None
     endpoints: list[dict] = []
     reasons: list[str] = []
     for fp in files:
         if limits.reached(len(endpoints), MAX_ENDPOINTS):
             reasons.append(f"endpoint limit reached ({MAX_ENDPOINTS})")
             break
-        endpoints.extend(_parse_file(fp, p))
+        endpoints.extend(_parse_file(fp, p, registered))
     if limits.reached(len(files), max_files):
         reasons.append(f"file limit reached ({max_files})")
 
@@ -130,10 +199,17 @@ def _walk(root: Path, max_files: int) -> list[Path]:
     return out
 
 
-def _parse_file(fp: Path, root: Path) -> list[dict]:
+def _parse_file(fp: Path, root: Path, registered: set[str] | None = None) -> list[dict]:
     lang = _lang_of(fp)
     if lang is None:
         return []
+    if lang == "php" and registered is not None:
+        try:
+            parts = fp.relative_to(root).parts
+        except ValueError:
+            parts = fp.parts
+        if "routes" in parts and fp.name not in registered:
+            return []
     try:
         if fp.stat().st_size > limits.resolve("GRIM_MAX_CODE_FILE_BYTES", 1024 * 1024):
             return []
@@ -183,7 +259,7 @@ def _parse_laravel(text: str, fp: Path, root: Path) -> list[dict]:
                 )
 
         if pending is not None and "{" in _strip_php_strings(line):
-            group_auth.append(bool(AUTH_MARKERS.search(pending)))
+            group_auth.append(_group_protected(pending))
             pending = None
         for _ in range(_strip_php_strings(line).count("}")):
             if group_auth:
@@ -244,7 +320,7 @@ def _from_line(
     auth_extra: bool = False,
 ) -> dict:
     probe = context if context is not None else line
-    auth = auth_extra or bool(AUTH_MARKERS.search(probe))
+    auth = auth_extra or bool(AUTH_MARKERS.search(probe)) or _middleware_protected(probe)
     inputs = bool(INPUT_MARKERS.search(probe))
     return _endpoint(framework, method, route, fp, root, lineno, auth, inputs)
 

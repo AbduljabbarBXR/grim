@@ -7,10 +7,10 @@
 
 > MCP registry: `io.github.AbduljabbarBXR/grim-mcp` (mcp-name: io.github.AbduljabbarBXR/grim-mcp)
 
-**Status: v0.5.2.** v1 validated against a real compromise; v2 adds the planner, SBOM,
+**Status: v0.5.3.** v1 validated against a real compromise; v2 adds the planner, SBOM,
 MITRE ATT&CK tagging, an IoC hash feed, a persistent findings ledger, nested-archive
 scanning, a delta cache, and parallel scanning. Zero runtime dependencies (Python stdlib
-only), runs on Linux/macOS/Windows and Termux. 248 tests passing across Python 3.10–3.13.
+only), runs on Linux/macOS/Windows and Termux. 253 tests passing across Python 3.10–3.13.
 
 ---
 
@@ -466,6 +466,8 @@ rules file that can be hosted remotely and pulled by every installation.
   arrays and groups, `watch` itemizes added files, and `ci_scan` can return SARIF
 - Shipped in 0.5.2: Laravel route scope tracking ignores braces inside route strings
   (for example `{id}`), so group middleware is inherited by every nested route
+- Shipped in 0.5.3: endpoint inventory recognises domain specific middleware names and
+  skips route files that the framework never registers, reducing false positives
 - Still planned: PR creation from `fix_plan`, optional node agent for drift alerts
 
 **Phase 3 — platform**

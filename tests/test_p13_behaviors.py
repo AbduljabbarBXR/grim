@@ -49,6 +49,8 @@ def main() -> int:
         _test_gzip()
         _test_endpoints_auth()
         _test_laravel_param_routes()
+        _test_laravel_custom_middleware()
+        _test_laravel_unregistered_routes()
         _test_watch_itemize()
         _test_ci_sarif()
     finally:
@@ -182,6 +184,48 @@ def _test_laravel_param_routes() -> None:
     check("unauthenticated controller group still flagged",
           upload is not None and upload["auth"] is False)
     check("unauthenticated upload is high risk", upload is not None and upload["risk"] == "high")
+
+
+def _test_laravel_custom_middleware() -> None:
+    # a group guarded by domain specific middleware names (no literal 'auth') is protected
+    d = _TMP / "laravel-custom"
+    d.mkdir(parents=True)
+    (d / "seller.php").write_text(
+        "<?php\n"
+        "Route::group(['prefix' => 'seller', 'middleware' => ['seller', 'verified', 'user', 'prevent-back-history']], function () {\n"
+        "    Route::any('/uploads', 'index');\n"
+        "    Route::get('/uploads/destroy/{id}', 'destroy');\n"
+        "});\n"
+    )
+    endpoints, _ = inventory_endpoints(str(d))
+    by = {e["path"]: e for e in endpoints}
+    check("custom middleware group is protected", by.get("/uploads", {}).get("auth") is True)
+    check("custom middleware route not high risk", by.get("/uploads", {}).get("risk") == "low")
+    check("param route in custom group protected", by.get("/uploads/destroy/{id}", {}).get("auth") is True)
+
+
+def _test_laravel_unregistered_routes() -> None:
+    # routes/install.php is not referenced by the provider (its registration is commented out)
+    d = _TMP / "laravel-unregistered"
+    (d / "routes").mkdir(parents=True)
+    (d / "app" / "Providers").mkdir(parents=True)
+    (d / "routes" / "web.php").write_text(
+        "<?php\n"
+        "Route::controller(Uploader::class)->group(function () {\n"
+        "    Route::post('/aiz-uploader/upload', 'upload');\n"
+        "});\n"
+    )
+    (d / "routes" / "install.php").write_text("<?php\nRoute::get('import_sql', 'x');\n")
+    (d / "app" / "Providers" / "RouteServiceProvider.php").write_text(
+        "<?php\nclass R {\n  public function boot() {\n    $this->routes(function () {\n"
+        "      Route::middleware('web')->group(base_path('routes/web.php'));\n"
+        "      // Route::middleware('web')->group(base_path('routes/install.php'));\n"
+        "    });\n  }\n}\n"
+    )
+    endpoints, _ = inventory_endpoints(str(d))
+    check("unregistered route file skipped", not any("import_sql" in e["path"] for e in endpoints))
+    upload = next((e for e in endpoints if e["path"] == "/aiz-uploader/upload"), None)
+    check("registered true positive still flagged", upload is not None and upload["auth"] is False and upload["risk"] == "high")
 
 
 def _test_watch_itemize() -> None:
