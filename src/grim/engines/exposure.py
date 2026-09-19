@@ -37,9 +37,9 @@ SPILL_CHUNK = 1 << 20  # 1 MB streaming chunk for nested-archive extraction
 
 WEB_SEGMENTS = {
     "public", "public_html", "www", "htdocs", "web", "static", "assets",
-    "uploads", "upload", "files", "uploads", "storage", "img", "images", "media",
+    "uploads", "upload", "files", "storage", "img", "images", "media",
 }
-UPLOAD_SEGMENTS = {"uploads", "upload", "uploads", "img", "images", "media", "files", "cache", "tmp"}
+UPLOAD_SEGMENTS = {"uploads", "upload", "img", "images", "media", "files", "cache", "tmp"}
 
 SAFE_ROOT_FILES = {
     "index.php", "index.html", "index.htm", ".htaccess", ".user.ini",

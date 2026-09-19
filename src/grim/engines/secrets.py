@@ -264,7 +264,7 @@ def _in_web_dir(fp: Path, root: Path) -> bool:
     except ValueError:
         rel = fp
     parts = [s.lower() for s in rel.parts[:-1]]
-    return any(s in {"public", "public_html", "www", "htdocs", "web", "uploads", "upload", "uploads", "static"} for s in parts)
+    return any(s in {"public", "public_html", "www", "htdocs", "web", "uploads", "upload", "static"} for s in parts)
 
 
 # --------------------------------------------------------------------------- entropy
