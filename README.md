@@ -461,9 +461,9 @@ rules file that can be hosted remotely and pulled by every installation.
   `inventory_endpoints`, remote rule feeds, bounded per-occurrence rules, cross-platform CI
 - Shipped in 0.5.0: `check_live` (opt-in, scope-gated live checks) and `malware_scan`
   (built-in heuristics + IoC, optional ClamAV/YARA adapters)
-- Shipped in 0.5.1: audit fixes - scanning a web dir directly keeps web context, plain
-  `.gz` files are not treated as tar (no false truncation), endpoint auth inheritance
-  (array middleware + groups), `watch` itemizes added files, `ci_scan` returns SARIF
+- Shipped in 0.5.1: web context is kept when scanning a web directory directly, plain
+  `.gz` files are scanned as gzip streams, endpoint auth inheritance covers middleware
+  arrays and groups, `watch` itemizes added files, and `ci_scan` can return SARIF
 - Shipped in 0.5.2: Laravel route scope tracking ignores braces inside route strings
   (for example `{id}`), so group middleware is inherited by every nested route
 - Still planned: PR creation from `fix_plan`, optional node agent for drift alerts

@@ -1,10 +1,10 @@
-"""P13 regression tests for the five reported 0.5.0 bugs:
+"""P13 behavior tests for cross-platform scanning and reporting:
 
-1. scanning a web directory directly must keep web context
-2. a plain .gz is not a tar; no false truncation or unreadable errors
-3. inventory_endpoints auth: array middleware and group inheritance
-4. watch diff itemizes added files
-5. ci_scan exposes SARIF
+- scanning a web directory directly keeps web context
+- plain .gz files are scanned as gzip streams, not misread as tar
+- endpoint inventory inherits auth from arrays, groups, and app.use
+- watch diffs itemize added, changed, and removed files
+- ci_scan can emit a SARIF report
 """
 
 from __future__ import annotations
