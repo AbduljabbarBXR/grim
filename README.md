@@ -7,7 +7,7 @@
 
 > MCP registry: `io.github.AbduljabbarBXR/grim-mcp` (`mcp-name: io.github.AbduljabbarBXR/grim-mcp`)
 
-**Status: v0.6.1.** Zero runtime dependencies (Python standard library only). Runs on Linux, macOS, Windows, and Termux. 279 tests passing across Python 3.10 to 3.13.
+**Status: v0.6.2.** Zero runtime dependencies (Python standard library only). Runs on Linux, macOS, Windows, and Termux. 279 tests passing across Python 3.10 to 3.13.
 
 ---
 
