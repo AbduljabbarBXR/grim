@@ -200,6 +200,29 @@ def _lang_of(fp: Path) -> str | None:
     return None
 
 
+def _has_suffix(root: Path, suffix: str, max_dirs: int = 3000) -> bool:
+    count = 0
+    for r, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        if any(fn.endswith(suffix) for fn in files):
+            return True
+        count += 1
+        if count > max_dirs:
+            break
+    return False
+
+
+def _astro_project(root: Path) -> bool:
+    """True when the project is Astro (config present, or .astro files without Next)."""
+    if not root.is_dir():
+        return False
+    if any((root / f).is_file() for f in ("astro.config.mjs", "astro.config.ts", "astro.config.js")):
+        return True
+    if any((root / f).is_file() for f in ("next.config.js", "next.config.mjs", "next.config.ts")):
+        return False
+    return _has_suffix(root, ".astro")
+
+
 def inventory_endpoints(path: str, stats: dict | None = None) -> tuple[list[dict], list[Finding]]:
     p = Path(path)
     if not p.exists():
@@ -207,13 +230,14 @@ def inventory_endpoints(path: str, stats: dict | None = None) -> tuple[list[dict
     max_files = limits.resolve("GRIM_MAX_FILES", MAX_FILES)
     files = [p] if p.is_file() else _walk(p, max_files)
     registered = _registered_route_files(p) if p.is_dir() else None
+    astro = _astro_project(p) if p.is_dir() else False
     endpoints: list[dict] = []
     reasons: list[str] = []
     for fp in files:
         if limits.reached(len(endpoints), MAX_ENDPOINTS):
             reasons.append(f"endpoint limit reached ({MAX_ENDPOINTS})")
             break
-        endpoints.extend(_parse_file(fp, p, registered))
+        endpoints.extend(_parse_file(fp, p, registered, astro))
     if limits.reached(len(files), max_files):
         reasons.append(f"file limit reached ({max_files})")
 
@@ -246,7 +270,7 @@ def _walk(root: Path, max_files: int) -> list[Path]:
     return out
 
 
-def _parse_file(fp: Path, root: Path, registered: set[str] | None = None) -> list[dict]:
+def _parse_file(fp: Path, root: Path, registered: set[str] | None = None, astro: bool = False) -> list[dict]:
     lang = _lang_of(fp)
     if lang is None:
         return []
@@ -263,6 +287,14 @@ def _parse_file(fp: Path, root: Path, registered: set[str] | None = None) -> lis
         text = fp.read_text(encoding="utf-8", errors="ignore")
     except OSError:
         return []
+    try:
+        rel_parts = fp.relative_to(root).parts
+    except ValueError:
+        rel_parts = fp.parts
+    # Astro API routes live under src/pages/api as .ts/.js; resolve Astro before the
+    # Next pages/api heuristic so they are not labelled nextjs.
+    if astro and "pages" in rel_parts and fp.suffix.lower() in (".ts", ".js", ".mjs", ".tsx", ".jsx"):
+        return _next_routes(text, fp, root, framework="astro", markers=("pages",), api_prefix="/")
     if lang in ("js",):
         return _parse_express(text, fp, root)
     if lang == "php":
@@ -391,8 +423,15 @@ def _regex_routes(
     return out
 
 
-def _next_routes(text: str, fp: Path, root: Path) -> list[dict]:
-    route = _file_route(fp, root, markers=("app", "pages"), api_prefix="/api")
+def _next_routes(
+    text: str,
+    fp: Path,
+    root: Path,
+    framework: str = "nextjs",
+    markers: tuple[str, ...] = ("app", "pages"),
+    api_prefix: str = "/api",
+) -> list[dict]:
+    route = _file_route(fp, root, markers=markers, api_prefix=api_prefix)
     methods = sorted(set(NEXT_ROUTE_METHOD.findall(text)))
     auth = bool(AUTH_MARKERS.search(text))
     inputs = bool(INPUT_MARKERS.search(text))
@@ -400,7 +439,7 @@ def _next_routes(text: str, fp: Path, root: Path) -> list[dict]:
         methods = ["ANY"] if "export default" in text else ["GET"]
     out: list[dict] = []
     for meth in methods or ["GET"]:
-        out.append(_endpoint("nextjs", meth, route, fp, root, 1, auth, inputs))
+        out.append(_endpoint(framework, meth, route, fp, root, 1, auth, inputs))
     return out
 
 

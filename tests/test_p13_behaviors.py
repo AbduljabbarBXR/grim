@@ -51,6 +51,7 @@ def main() -> int:
         _test_laravel_param_routes()
         _test_laravel_custom_middleware()
         _test_laravel_unregistered_routes()
+        _test_astro_api_routes()
         _test_watch_itemize()
         _test_ci_sarif()
     finally:
@@ -245,6 +246,27 @@ def _test_laravel_unregistered_routes() -> None:
     check("called mapping method route file scanned", any(e["path"] == "/orders" for e in endpoints))
     upload = next((e for e in endpoints if e["path"] == "/aiz-uploader/upload"), None)
     check("registered true positive still flagged", upload is not None and upload["auth"] is False and upload["risk"] == "high")
+
+
+def _test_astro_api_routes() -> None:
+    # Astro API routes must be labelled astro, not nextjs
+    d = _TMP / "astro-app"
+    (d / "src" / "pages" / "api").mkdir(parents=True)
+    (d / "astro.config.mjs").write_text("export default {};\n")
+    (d / "src" / "pages" / "api" / "items.ts").write_text(
+        'export async function GET() { return new Response("[]"); }\n'
+        'export async function POST({ request }) { return new Response("ok"); }\n'
+    )
+    endpoints, _ = inventory_endpoints(str(d))
+    check("astro api route labelled astro", len(endpoints) == 2 and all(e["framework"] == "astro" for e in endpoints))
+
+    # a Next project with pages/api stays nextjs
+    n = _TMP / "next-app"
+    (n / "pages" / "api").mkdir(parents=True)
+    (n / "next.config.js").write_text("module.exports = {};\n")
+    (n / "pages" / "api" / "x.ts").write_text("export default function handler(req, res) { res.json(req.query); }\n")
+    next_eps, _ = inventory_endpoints(str(n))
+    check("next project stays nextjs", bool(next_eps) and all(e["framework"] == "nextjs" for e in next_eps))
 
 
 def _test_watch_itemize() -> None:

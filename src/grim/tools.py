@@ -499,7 +499,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         "schema": _schema(
             {
                 **PATH_PROP,
-                "languages": {"type": "array", "items": {"type": "string"}, "description": "Filter: php, js, python, go, rust, java, kotlin, csharp, ruby, dart"},
+                "languages": {"type": "array", "items": {"type": "string"}, "description": "Filter by language: php, js, python, ruby, go, rust, java, kotlin, csharp, dart, c, cpp, objc, swift, scala, groovy, elixir, erlang, lua, perl, r, julia, nim, powershell, shell, hcl, dockerfile, clojure, haskell"},
                 "max_files": {"type": "integer", "description": "Max files to scan (default 20000)"},
                 "workers": {"type": "integer", "description": "Parallel scan workers (default CPU-based)"},
                 "use_cache": {"type": "boolean", "description": "Reuse delta cache of unchanged files (default true)"},

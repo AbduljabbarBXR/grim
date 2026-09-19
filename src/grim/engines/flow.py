@@ -77,6 +77,62 @@ SOURCES: dict[str, list[re.Pattern]] = {
     "dart": [
         re.compile(r"\brequest\.(body|uri\.queryParameters|headers)\b"),
     ],
+    "c": [
+        re.compile(r"\bargv\b"),
+        re.compile(r"\bgetenv\s*\("),
+        re.compile(r"\b(?:recv|fgets|read)\s*\("),
+    ],
+    "cpp": [
+        re.compile(r"\bargv\b"),
+        re.compile(r"\bgetenv\s*\("),
+        re.compile(r"\b(?:recv|fgets|read)\s*\("),
+    ],
+    "objc": [
+        re.compile(r"\bargv\b"),
+        re.compile(r"\bgetenv\s*\("),
+        re.compile(r"\b(?:recv|fgets|read)\s*\("),
+    ],
+    "swift": [
+        re.compile(r"\bCommandLine\.arguments\b"),
+        re.compile(r"\breadLine\s*\("),
+    ],
+    "scala": [
+        re.compile(r"\bargs\b"),
+        re.compile(r"\b(?:request|params)\b"),
+    ],
+    "groovy": [
+        re.compile(r"\b(?:params|request|args)\b"),
+    ],
+    "elixir": [
+        re.compile(r"\bparams\b"),
+        re.compile(r"\bSystem\.argv\b"),
+    ],
+    "lua": [
+        re.compile(r"\barg\b"),
+        re.compile(r"\bio\.read\s*\("),
+        re.compile(r"\bngx\.(?:var|req)\b"),
+    ],
+    "perl": [
+        re.compile(r"@ARGV\b"),
+        re.compile(r"\bparam\s*\("),
+        re.compile(r"\$ENV\b"),
+    ],
+    "r": [
+        re.compile(r"\bcommandArgs\s*\("),
+        re.compile(r"\breadline\s*\("),
+    ],
+    "julia": [
+        re.compile(r"\bARGS\b"),
+        re.compile(r"\breadline\s*\("),
+    ],
+    "shell": [
+        re.compile(r"\$\{?[1@*]\}?"),
+        re.compile(r"\bread\s+"),
+    ],
+    "powershell": [
+        re.compile(r"\$args\b", re.I),
+        re.compile(r"\bRead-Host\b", re.I),
+    ],
 }
 
 # Dangerous sinks. (regex, severity, title, description, remediation)
@@ -140,6 +196,80 @@ SINKS: dict[str, list[tuple[re.Pattern, str, str, str, str]]] = {
          "Untrusted input may reach Process.run.", "Validate input strictly."),
         (re.compile(r"\beval\s*\(|\bHttp\.get\s*\("), "medium", "dynamic request with possibly tainted input",
          "Untrusted input may reach a dynamic request.", "Validate URLs."),
+    ],
+    "c": [
+        (re.compile(r"\b(?:system|popen|execl|execv|execvp)\s*\("), "high", "process execution with possibly tainted input",
+         "Untrusted input may reach a process execution sink.", "Avoid the shell and validate input."),
+        (re.compile(r"\b(?:strcpy|strcat|sprintf|gets)\s*\("), "high", "unbounded copy with possibly tainted input",
+         "Untrusted input may reach an unbounded copy.", "Use bounded string APIs."),
+    ],
+    "cpp": [
+        (re.compile(r"\b(?:system|popen|execl|execv|execvp)\s*\("), "high", "process execution with possibly tainted input",
+         "Untrusted input may reach a process execution sink.", "Avoid the shell and validate input."),
+        (re.compile(r"\b(?:strcpy|strcat|sprintf|gets)\s*\("), "high", "unbounded copy with possibly tainted input",
+         "Untrusted input may reach an unbounded copy.", "Use bounded string APIs."),
+    ],
+    "objc": [
+        (re.compile(r"\bsystem\s*\("), "high", "process execution with possibly tainted input",
+         "Untrusted input may reach a process execution sink.", "Avoid the shell and validate input."),
+        (re.compile(r"\bNSTask\b"), "medium", "process execution with possibly tainted input",
+         "Untrusted input may reach NSTask.", "Validate input strictly."),
+    ],
+    "swift": [
+        (re.compile(r"\b(?:Process|NSTask)\s*\("), "high", "process execution with possibly tainted input",
+         "Untrusted input may reach a process execution sink.", "Validate input strictly."),
+    ],
+    "scala": [
+        (re.compile(r"getRuntime\s*\(\s*\)\s*\.\s*exec|(?:^|[^.\w])Process\s*\("), "high", "process execution with possibly tainted input",
+         "Untrusted input may reach a process execution sink.", "Validate input strictly."),
+        (re.compile(r"Source\s*\.\s*fromURL\s*\("), "medium", "outbound request with possibly tainted input",
+         "Untrusted input may reach a URL fetch.", "Validate and allowlist URLs."),
+    ],
+    "groovy": [
+        (re.compile(r"\.execute\s*\(|evaluate\s*\("), "high", "dynamic execution with possibly tainted input",
+         "Untrusted input may reach execute or evaluate.", "Validate input strictly."),
+    ],
+    "elixir": [
+        (re.compile(r"\bSystem\.cmd\s*\(|:os\.cmd\s*\("), "high", "process execution with possibly tainted input",
+         "Untrusted input may reach a process execution sink.", "Validate input strictly."),
+        (re.compile(r"\bCode\.eval_(?:string|quoted)\s*\("), "high", "dynamic evaluation with possibly tainted input",
+         "Untrusted input may reach Code.eval.", "Avoid eval on input."),
+    ],
+    "lua": [
+        (re.compile(r"\b(?:os\.execute|io\.popen)\s*\("), "high", "process execution with possibly tainted input",
+         "Untrusted input may reach a process execution sink.", "Validate input strictly."),
+        (re.compile(r"\bload(?:string)?\s*\("), "high", "dynamic load with possibly tainted input",
+         "Untrusted input may reach load.", "Do not load untrusted content."),
+    ],
+    "perl": [
+        (re.compile(r"\b(?:system|exec)\s*[\s(]|qx\s*[/({]"), "high", "process execution with possibly tainted input",
+         "Untrusted input may reach a shell command.", "Use the list form and validate input."),
+        (re.compile(r"\beval\s*[\(\{'\"\s]"), "high", "dynamic evaluation with possibly tainted input",
+         "Untrusted input may reach eval.", "Avoid eval on input."),
+    ],
+    "r": [
+        (re.compile(r"\b(?:system|system2|shell)\s*\("), "high", "process execution with possibly tainted input",
+         "Untrusted input may reach a shell command.", "Validate input strictly."),
+        (re.compile(r"\beval\s*\(\s*parse\s*\("), "high", "dynamic evaluation with possibly tainted input",
+         "Untrusted input may reach eval(parse()).", "Avoid eval(parse()) on input."),
+    ],
+    "julia": [
+        (re.compile(r"\brun\s*\("), "high", "process execution with possibly tainted input",
+         "Untrusted input may reach run().", "Validate input strictly."),
+        (re.compile(r"\beval\s*\(\s*(?:Meta\.)?parse\s*\("), "high", "dynamic evaluation with possibly tainted input",
+         "Untrusted input may reach eval(parse()).", "Avoid eval on input."),
+    ],
+    "shell": [
+        (re.compile(r"\beval\s+"), "high", "dynamic evaluation with possibly tainted input",
+         "Untrusted input may reach eval.", "Avoid eval on input."),
+        (re.compile(r"(?:curl|wget)[^\n|]{0,120}\|\s*(?:ba|z)?sh"), "critical", "piped shell download with possibly tainted input",
+         "Untrusted input may reach a piped shell.", "Download, verify, then run."),
+    ],
+    "powershell": [
+        (re.compile(r"\b(?:Invoke-Expression|iex)\b", re.I), "high", "dynamic evaluation with possibly tainted input",
+         "Untrusted input may reach Invoke-Expression.", "Avoid iex on input."),
+        (re.compile(r"\bStart-Process\b", re.I), "medium", "process execution with possibly tainted input",
+         "Untrusted input may reach Start-Process.", "Validate input strictly."),
     ],
 }
 
@@ -245,7 +375,7 @@ def analyze_text(text: str, fp: Path, lang: str) -> list[Finding]:
 
     lines = text.splitlines()
     tainted: set[str] = set()
-    src_re = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)")
+    src_re = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*=(?!=)\s*(.*)")
 
     for lineno, line in enumerate(lines, start=1):
         stripped = line.strip()
@@ -263,7 +393,7 @@ def analyze_text(text: str, fp: Path, lang: str) -> list[Finding]:
                 break
 
         # assignments that taint a variable
-        m = src_re.match(stripped)
+        m = src_re.search(stripped)
         if m:
             var, expr = m.group(1), m.group(2)
             if any(src.search(expr) for src in sources):

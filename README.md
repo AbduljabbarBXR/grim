@@ -7,10 +7,10 @@
 
 > MCP registry: `io.github.AbduljabbarBXR/grim-mcp` (mcp-name: io.github.AbduljabbarBXR/grim-mcp)
 
-**Status: v0.5.4.** v1 validated against a real compromise; v2 adds the planner, SBOM,
+**Status: v0.6.0.** v1 validated against a real compromise; v2 adds the planner, SBOM,
 MITRE ATT&CK tagging, an IoC hash feed, a persistent findings ledger, nested-archive
 scanning, a delta cache, and parallel scanning. Zero runtime dependencies (Python stdlib
-only), runs on Linux/macOS/Windows and Termux. 254 tests passing across Python 3.10–3.13.
+only), runs on Linux/macOS/Windows and Termux. 278 tests passing across Python 3.10–3.13.
 
 ---
 
@@ -456,7 +456,10 @@ rules file that can be hosted remotely and pulled by every installation.
 - Shipped in 0.3.0: SARIF 2.1.0 export, `ci_scan` / `grim ci` exit-code gate, production
   hardening (correct delta cache, unreadable-archive reporting, single-pass code+flow,
   parallel secrets, deterministic selection, streamed nested spill, wall-clock budget)
-- Multi-language SAST + lockfile coverage: Go, Rust, Java, Kotlin, C#, Ruby, Dart
+- SAST and taint coverage across many languages: PHP, JS/TS, Python, Ruby, Go, Rust, Java,
+  Kotlin, C#, Dart, C, C++, Objective-C, Swift, Scala, Groovy, Elixir, Erlang, Lua, Perl, R,
+  Julia, Nim, PowerShell, Shell, Terraform/HCL, Dockerfile, Clojure, Haskell
+- Lockfile coverage: npm, Composer, PyPI, Go, Cargo, Pub, Maven, NuGet, RubyGems
 - Shipped in 0.4.0: `watch` (baselines + drift), `fix_plan` (remediation + safe diffs),
   `inventory_endpoints`, remote rule feeds, bounded per-occurrence rules, cross-platform CI
 - Shipped in 0.5.0: `check_live` (opt-in, scope-gated live checks) and `malware_scan`
@@ -470,6 +473,9 @@ rules file that can be hosted remotely and pulled by every installation.
   skips route files that the framework never registers, reducing false positives
 - Shipped in 0.5.4: a defined but never invoked Laravel mapping method no longer
   registers its route file, so unloaded routes stay out of the inventory
+- Shipped in 0.6.0: SAST and taint coverage added for C, C++, Objective-C, Swift, Scala,
+  Groovy, Elixir, Erlang, Lua, Perl, R, Julia, Nim, PowerShell, Shell, Terraform, Dockerfile,
+  Clojure, and Haskell; Astro API routes are labelled astro, not nextjs
 - Still planned: PR creation from `fix_plan`, optional node agent for drift alerts
 
 **Phase 3 — platform**
