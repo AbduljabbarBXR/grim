@@ -305,39 +305,39 @@ grim/
 Editors and agents:
 
 <p>
-<img src="https://raw.githubusercontent.com/AbduljabbarBXR/grim/main/docs/logos/claude.svg" alt="Claude Code" height="26">&nbsp;
-<img src="https://raw.githubusercontent.com/AbduljabbarBXR/grim/main/docs/logos/codex.svg" alt="OpenAI Codex" height="26">&nbsp;
-<img src="https://raw.githubusercontent.com/AbduljabbarBXR/grim/main/docs/logos/cursor.svg" alt="Cursor" height="26">&nbsp;
-<img src="https://raw.githubusercontent.com/AbduljabbarBXR/grim/main/docs/logos/cline.svg" alt="Cline" height="26">&nbsp;
-<img src="https://raw.githubusercontent.com/AbduljabbarBXR/grim/main/docs/logos/windsurf.svg" alt="Windsurf" height="26">&nbsp;
-<img src="https://raw.githubusercontent.com/AbduljabbarBXR/grim/main/docs/logos/zed.svg" alt="Zed" height="26">&nbsp;
-<img src="https://raw.githubusercontent.com/AbduljabbarBXR/grim/main/docs/logos/opencode.svg" alt="opencode" height="26">&nbsp;
-<img src="https://raw.githubusercontent.com/AbduljabbarBXR/grim/main/docs/logos/lmstudio.svg" alt="LM Studio" height="26">&nbsp;
-<img src="https://raw.githubusercontent.com/AbduljabbarBXR/grim/main/docs/logos/vscodium.svg" alt="VS Code compatible editors" height="26">&nbsp;
-<img src="https://raw.githubusercontent.com/AbduljabbarBXR/grim/main/docs/logos/neovim.svg" alt="Neovim" height="26">&nbsp;
-<img src="https://raw.githubusercontent.com/AbduljabbarBXR/grim/main/docs/logos/jetbrains.svg" alt="JetBrains" height="26">&nbsp;
-<img src="https://raw.githubusercontent.com/AbduljabbarBXR/grim/main/docs/logos/continue.svg" alt="Continue" height="26">&nbsp;
-<img src="https://raw.githubusercontent.com/AbduljabbarBXR/grim/main/docs/logos/roocode.svg" alt="Roo Code" height="26">&nbsp;
-<img src="https://raw.githubusercontent.com/AbduljabbarBXR/grim/main/docs/logos/kilocode.svg" alt="Kilo Code" height="26">&nbsp;
-<img src="https://raw.githubusercontent.com/AbduljabbarBXR/grim/main/docs/logos/goose.svg" alt="Goose" height="26">&nbsp;
-<img src="https://raw.githubusercontent.com/AbduljabbarBXR/grim/main/docs/logos/aider.svg" alt="Aider" height="26">
+<img src="https://cdn.jsdelivr.net/gh/AbduljabbarBXR/grim@main/docs/logos/claude.svg" alt="Claude Code" height="26">&nbsp;
+<img src="https://cdn.jsdelivr.net/gh/AbduljabbarBXR/grim@main/docs/logos/codex.svg" alt="OpenAI Codex" height="26">&nbsp;
+<img src="https://cdn.jsdelivr.net/gh/AbduljabbarBXR/grim@main/docs/logos/cursor.svg" alt="Cursor" height="26">&nbsp;
+<img src="https://cdn.jsdelivr.net/gh/AbduljabbarBXR/grim@main/docs/logos/cline.svg" alt="Cline" height="26">&nbsp;
+<img src="https://cdn.jsdelivr.net/gh/AbduljabbarBXR/grim@main/docs/logos/windsurf.svg" alt="Windsurf" height="26">&nbsp;
+<img src="https://cdn.jsdelivr.net/gh/AbduljabbarBXR/grim@main/docs/logos/zed.svg" alt="Zed" height="26">&nbsp;
+<img src="https://cdn.jsdelivr.net/gh/AbduljabbarBXR/grim@main/docs/logos/opencode.svg" alt="opencode" height="26">&nbsp;
+<img src="https://cdn.jsdelivr.net/gh/AbduljabbarBXR/grim@main/docs/logos/lmstudio.svg" alt="LM Studio" height="26">&nbsp;
+<img src="https://cdn.jsdelivr.net/gh/AbduljabbarBXR/grim@main/docs/logos/vscodium.svg" alt="VS Code compatible editors" height="26">&nbsp;
+<img src="https://cdn.jsdelivr.net/gh/AbduljabbarBXR/grim@main/docs/logos/neovim.svg" alt="Neovim" height="26">&nbsp;
+<img src="https://cdn.jsdelivr.net/gh/AbduljabbarBXR/grim@main/docs/logos/jetbrains.svg" alt="JetBrains" height="26">&nbsp;
+<img src="https://cdn.jsdelivr.net/gh/AbduljabbarBXR/grim@main/docs/logos/continue.svg" alt="Continue" height="26">&nbsp;
+<img src="https://cdn.jsdelivr.net/gh/AbduljabbarBXR/grim@main/docs/logos/roocode.svg" alt="Roo Code" height="26">&nbsp;
+<img src="https://cdn.jsdelivr.net/gh/AbduljabbarBXR/grim@main/docs/logos/kilocode.svg" alt="Kilo Code" height="26">&nbsp;
+<img src="https://cdn.jsdelivr.net/gh/AbduljabbarBXR/grim@main/docs/logos/goose.svg" alt="Goose" height="26">&nbsp;
+<img src="https://cdn.jsdelivr.net/gh/AbduljabbarBXR/grim@main/docs/logos/aider.svg" alt="Aider" height="26">
 </p>
 
 Model providers:
 
 <p>
-<img src="https://raw.githubusercontent.com/AbduljabbarBXR/grim/main/docs/logos/anthropic.svg" alt="Anthropic" height="26">&nbsp;
-<img src="https://raw.githubusercontent.com/AbduljabbarBXR/grim/main/docs/logos/claude.svg" alt="Claude" height="26">&nbsp;
-<img src="https://raw.githubusercontent.com/AbduljabbarBXR/grim/main/docs/logos/openai.svg" alt="OpenAI" height="26">&nbsp;
-<img src="https://raw.githubusercontent.com/AbduljabbarBXR/grim/main/docs/logos/gemini.svg" alt="Google Gemini" height="26">&nbsp;
-<img src="https://raw.githubusercontent.com/AbduljabbarBXR/grim/main/docs/logos/deepseek.svg" alt="DeepSeek" height="26">&nbsp;
-<img src="https://raw.githubusercontent.com/AbduljabbarBXR/grim/main/docs/logos/meta.svg" alt="Meta Llama" height="26">&nbsp;
-<img src="https://raw.githubusercontent.com/AbduljabbarBXR/grim/main/docs/logos/mistral.svg" alt="Mistral" height="26">&nbsp;
-<img src="https://raw.githubusercontent.com/AbduljabbarBXR/grim/main/docs/logos/qwen.svg" alt="Qwen" height="26">&nbsp;
-<img src="https://raw.githubusercontent.com/AbduljabbarBXR/grim/main/docs/logos/xai.svg" alt="xAI" height="26">&nbsp;
-<img src="https://raw.githubusercontent.com/AbduljabbarBXR/grim/main/docs/logos/ollama.svg" alt="Ollama" height="26">&nbsp;
-<img src="https://raw.githubusercontent.com/AbduljabbarBXR/grim/main/docs/logos/huggingface.svg" alt="Hugging Face" height="26">&nbsp;
-<img src="https://raw.githubusercontent.com/AbduljabbarBXR/grim/main/docs/logos/cohere.svg" alt="Cohere" height="26">
+<img src="https://cdn.jsdelivr.net/gh/AbduljabbarBXR/grim@main/docs/logos/anthropic.svg" alt="Anthropic" height="26">&nbsp;
+<img src="https://cdn.jsdelivr.net/gh/AbduljabbarBXR/grim@main/docs/logos/claude.svg" alt="Claude" height="26">&nbsp;
+<img src="https://cdn.jsdelivr.net/gh/AbduljabbarBXR/grim@main/docs/logos/openai.svg" alt="OpenAI" height="26">&nbsp;
+<img src="https://cdn.jsdelivr.net/gh/AbduljabbarBXR/grim@main/docs/logos/gemini.svg" alt="Google Gemini" height="26">&nbsp;
+<img src="https://cdn.jsdelivr.net/gh/AbduljabbarBXR/grim@main/docs/logos/deepseek.svg" alt="DeepSeek" height="26">&nbsp;
+<img src="https://cdn.jsdelivr.net/gh/AbduljabbarBXR/grim@main/docs/logos/meta.svg" alt="Meta Llama" height="26">&nbsp;
+<img src="https://cdn.jsdelivr.net/gh/AbduljabbarBXR/grim@main/docs/logos/mistral.svg" alt="Mistral" height="26">&nbsp;
+<img src="https://cdn.jsdelivr.net/gh/AbduljabbarBXR/grim@main/docs/logos/qwen.svg" alt="Qwen" height="26">&nbsp;
+<img src="https://cdn.jsdelivr.net/gh/AbduljabbarBXR/grim@main/docs/logos/xai.svg" alt="xAI" height="26">&nbsp;
+<img src="https://cdn.jsdelivr.net/gh/AbduljabbarBXR/grim@main/docs/logos/ollama.svg" alt="Ollama" height="26">&nbsp;
+<img src="https://cdn.jsdelivr.net/gh/AbduljabbarBXR/grim@main/docs/logos/huggingface.svg" alt="Hugging Face" height="26">&nbsp;
+<img src="https://cdn.jsdelivr.net/gh/AbduljabbarBXR/grim@main/docs/logos/cohere.svg" alt="Cohere" height="26">
 </p>
 
 *GRIM because the things that get you are the things nobody was looking at.*
