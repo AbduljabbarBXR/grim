@@ -260,6 +260,14 @@ def _test_astro_api_routes() -> None:
     endpoints, _ = inventory_endpoints(str(d))
     check("astro api route labelled astro", len(endpoints) == 2 and all(e["framework"] == "astro" for e in endpoints))
 
+    # Astro without astro.config: detected via the src/pages plus src/layouts convention
+    a2 = _TMP / "astro-noconfig"
+    (a2 / "src" / "pages" / "api").mkdir(parents=True)
+    (a2 / "src" / "layouts").mkdir(parents=True)
+    (a2 / "src" / "pages" / "api" / "items.ts").write_text('export async function GET() { return new Response("[]"); }\n')
+    e2, _ = inventory_endpoints(str(a2))
+    check("astro without config is detected", bool(e2) and all(e["framework"] == "astro" for e in e2))
+
     # a Next project with pages/api stays nextjs
     n = _TMP / "next-app"
     (n / "pages" / "api").mkdir(parents=True)

@@ -7,10 +7,10 @@
 
 > MCP registry: `io.github.AbduljabbarBXR/grim-mcp` (mcp-name: io.github.AbduljabbarBXR/grim-mcp)
 
-**Status: v0.6.0.** v1 validated against a real compromise; v2 adds the planner, SBOM,
+**Status: v0.6.1.** v1 validated against a real compromise; v2 adds the planner, SBOM,
 MITRE ATT&CK tagging, an IoC hash feed, a persistent findings ledger, nested-archive
 scanning, a delta cache, and parallel scanning. Zero runtime dependencies (Python stdlib
-only), runs on Linux/macOS/Windows and Termux. 278 tests passing across Python 3.10–3.13.
+only), runs on Linux/macOS/Windows and Termux. 279 tests passing across Python 3.10–3.13.
 
 ---
 
@@ -476,6 +476,8 @@ rules file that can be hosted remotely and pulled by every installation.
 - Shipped in 0.6.0: SAST and taint coverage added for C, C++, Objective-C, Swift, Scala,
   Groovy, Elixir, Erlang, Lua, Perl, R, Julia, Nim, PowerShell, Shell, Terraform, Dockerfile,
   Clojure, and Haskell; Astro API routes are labelled astro, not nextjs
+- Shipped in 0.6.1: Astro is detected without astro.config (package.json dependency or the
+  src/pages plus src/layouts convention)
 - Still planned: PR creation from `fix_plan`, optional node agent for drift alerts
 
 **Phase 3 — platform**

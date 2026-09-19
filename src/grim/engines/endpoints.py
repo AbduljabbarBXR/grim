@@ -7,6 +7,7 @@ and a risk level. Unauthenticated routes with input surfaces rank highest.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from pathlib import Path
@@ -213,14 +214,30 @@ def _has_suffix(root: Path, suffix: str, max_dirs: int = 3000) -> bool:
 
 
 def _astro_project(root: Path) -> bool:
-    """True when the project is Astro (config present, or .astro files without Next)."""
+    """True when the project is Astro, with or without astro.config.
+
+    Order: explicit Astro config, then a Next config rules it out, then an .astro file,
+    then an astro dependency in package.json, then the src/pages plus src/layouts
+    convention.
+    """
     if not root.is_dir():
         return False
     if any((root / f).is_file() for f in ("astro.config.mjs", "astro.config.ts", "astro.config.js")):
         return True
     if any((root / f).is_file() for f in ("next.config.js", "next.config.mjs", "next.config.ts")):
         return False
-    return _has_suffix(root, ".astro")
+    if _has_suffix(root, ".astro"):
+        return True
+    pkg = root / "package.json"
+    if pkg.is_file():
+        try:
+            data = json.loads(pkg.read_text(encoding="utf-8", errors="ignore"))
+            deps = {**(data.get("dependencies") or {}), **(data.get("devDependencies") or {})}
+            if "astro" in deps:
+                return True
+        except (OSError, ValueError):
+            pass
+    return (root / "src" / "pages").is_dir() and (root / "src" / "layouts").is_dir()
 
 
 def inventory_endpoints(path: str, stats: dict | None = None) -> tuple[list[dict], list[Finding]]:
