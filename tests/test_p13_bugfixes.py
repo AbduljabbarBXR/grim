@@ -48,6 +48,7 @@ def main() -> int:
         _test_web_context()
         _test_gzip()
         _test_endpoints_auth()
+        _test_laravel_param_routes()
         _test_watch_itemize()
         _test_ci_sarif()
     finally:
@@ -147,6 +148,40 @@ def _test_endpoints_auth() -> None:
     )
     endpoints2, _ = inventory_endpoints(str(d / "arr.js"))
     check("express array middleware detected", endpoints2 and endpoints2[0]["auth"] is True)
+
+
+def _test_laravel_param_routes() -> None:
+    # `{param}` inside a route string must not be counted as a scope close
+    d = _TMP / "laravel-params"
+    d.mkdir(parents=True)
+    (d / "admin.php").write_text(
+        "<?php\n"
+        "Route::group(['prefix' => 'admin', 'middleware' => ['auth', 'admin']], function () {\n"
+        "    Route::get('/plain', 'index');\n"
+        "    Route::get('/products/{id}/edit', 'edit');\n"
+        "    Route::get('/brand-bulk-upload', 'bulk');\n"
+        "});\n"
+    )
+    endpoints, _ = inventory_endpoints(str(d))
+    by = {e["path"]: e for e in endpoints}
+    check("param route keeps group auth", by.get("/products/{id}/edit", {}).get("auth") is True)
+    check("route after param keeps group auth", by.get("/brand-bulk-upload", {}).get("auth") is True)
+    check("param route not high risk", by.get("/brand-bulk-upload", {}).get("risk") == "low")
+
+    # controller-level group with no middleware must stay flagged (true positive)
+    d2 = _TMP / "laravel-open"
+    d2.mkdir(parents=True)
+    (d2 / "web.php").write_text(
+        "<?php\n"
+        "Route::controller(App\\Http\\Controllers\\UploaderController::class)->group(function () {\n"
+        "    Route::post('/aiz-uploader/upload', 'upload');\n"
+        "});\n"
+    )
+    endpoints2, _ = inventory_endpoints(str(d2))
+    upload = next((e for e in endpoints2 if e["path"] == "/aiz-uploader/upload"), None)
+    check("unauthenticated controller group still flagged",
+          upload is not None and upload["auth"] is False)
+    check("unauthenticated upload is high risk", upload is not None and upload["risk"] == "high")
 
 
 def _test_watch_itemize() -> None:

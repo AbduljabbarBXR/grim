@@ -55,6 +55,13 @@ DJANGO = re.compile(r"\b(?:path|re_path|url)\s*\(\s*r?['\"]([^'\"]+)['\"]")
 GO_METHOD = re.compile(r"\b\w+\.(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s*\(\s*\"([^\"]+)\"")
 GO_HANDLE = re.compile(r"(?:http\.HandleFunc|\w+\.HandleFunc|\w+\.Handle)\s*\(\s*\"([^\"]+)\"")
 NEXT_ROUTE_METHOD = re.compile(r"export\s+(?:async\s+)?(?:function|const)\s+(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\b")
+_PHP_STRING = re.compile(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"")
+
+
+def _strip_php_strings(line: str) -> str:
+    """Remove PHP string literal contents so braces inside routes (for example
+    '/products/{id}/edit') are not counted as scope delimiters."""
+    return _PHP_STRING.sub("''", line)
 
 
 def _lang_of(fp: Path) -> str | None:
@@ -175,10 +182,10 @@ def _parse_laravel(text: str, fp: Path, root: Path) -> list[dict]:
                                context=context, auth_extra=inherited)
                 )
 
-        if pending is not None and "{" in line:
+        if pending is not None and "{" in _strip_php_strings(line):
             group_auth.append(bool(AUTH_MARKERS.search(pending)))
             pending = None
-        for _ in range(line.count("}")):
+        for _ in range(_strip_php_strings(line).count("}")):
             if group_auth:
                 group_auth.pop()
     return out
