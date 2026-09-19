@@ -110,11 +110,53 @@ def _strip_php_comments(text: str) -> str:
     return text
 
 
-def _registered_route_files(root: Path) -> set[str] | None:
-    """Route file basenames referenced by RouteServiceProvider or bootstrap/app.php.
+def _method_spans(text: str) -> list[tuple[str, int, int]]:
+    """(name, start, end) for each PHP method body, skipping string braces."""
+    spans: list[tuple[str, int, int]] = []
+    for m in re.finditer(r"function\s+([A-Za-z_]\w*)\s*\([^)]*\)\s*(?::\s*[\w\\?]+\s*)?\{", text):
+        name = m.group(1)
+        start = m.end() - 1
+        depth = 0
+        i = start
+        n = len(text)
+        while i < n:
+            c = text[i]
+            if c == "'":
+                nxt = text.find("'", i + 1)
+                if nxt < 0:
+                    break
+                i = nxt
+            elif c == '"':
+                nxt = text.find('"', i + 1)
+                if nxt < 0:
+                    break
+                i = nxt
+            elif c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        spans.append((name, start, i))
+    return spans
 
-    Returns None when the project exposes no provider (scan everything). Commented
-    registrations are ignored, so an unreferenced routes file is not scanned.
+
+def _enclosing_method(spans: list[tuple[str, int, int]], idx: int) -> str | None:
+    best: tuple[str, int, int] | None = None
+    for span in spans:
+        if span[1] <= idx <= span[2] and (best is None or (span[2] - span[1]) < (best[2] - best[1])):
+            best = span
+    return best[0] if best else None
+
+
+def _registered_route_files(root: Path) -> set[str] | None:
+    """Route file basenames that the framework actually loads.
+
+    References inside the class are accepted, except when they sit inside a mapping
+    method (for example ``mapInstallRoutes``) that is never invoked. Commented-out
+    calls are ignored, so a defined-but-uncalled mapping method does not register its
+    route file. Returns None when the project exposes no provider (scan everything).
     """
     if not root.is_dir():
         return None
@@ -127,7 +169,12 @@ def _registered_route_files(root: Path) -> set[str] | None:
             text = _strip_php_comments(f.read_text(encoding="utf-8", errors="ignore"))
         except OSError:
             continue
+        spans = _method_spans(text)
+        called = set(re.findall(r"\$this->(\w*Routes)\s*\(", text))
         for m in re.finditer(r"routes/([A-Za-z0-9_./-]+\.php)", text):
+            method = _enclosing_method(spans, m.start())
+            if method and method.lower().endswith("routes") and method not in called:
+                continue
             names.add(Path(m.group(1)).name)
     return names or None
 

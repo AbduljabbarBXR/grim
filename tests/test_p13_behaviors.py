@@ -205,7 +205,7 @@ def _test_laravel_custom_middleware() -> None:
 
 
 def _test_laravel_unregistered_routes() -> None:
-    # routes/install.php is not referenced by the provider (its registration is commented out)
+    # the mapping method exists and is uncommented, but the call to it is commented out
     d = _TMP / "laravel-unregistered"
     (d / "routes").mkdir(parents=True)
     (d / "app" / "Providers").mkdir(parents=True)
@@ -215,15 +215,34 @@ def _test_laravel_unregistered_routes() -> None:
         "    Route::post('/aiz-uploader/upload', 'upload');\n"
         "});\n"
     )
+    (d / "routes" / "seller.php").write_text(
+        "<?php\n"
+        "Route::group(['prefix' => 'seller', 'middleware' => ['seller']], function () {\n"
+        "    Route::get('/orders', 'index');\n"
+        "});\n"
+    )
     (d / "routes" / "install.php").write_text("<?php\nRoute::get('import_sql', 'x');\n")
     (d / "app" / "Providers" / "RouteServiceProvider.php").write_text(
-        "<?php\nclass R {\n  public function boot() {\n    $this->routes(function () {\n"
+        "<?php\n"
+        "class RouteServiceProvider {\n"
+        "  public function boot() {\n"
+        "    $this->routes(function () {\n"
         "      Route::middleware('web')->group(base_path('routes/web.php'));\n"
-        "      // Route::middleware('web')->group(base_path('routes/install.php'));\n"
-        "    });\n  }\n}\n"
+        "    });\n"
+        "    $this->mapSellerRoutes();\n"
+        "    // $this->mapInstallRoutes();\n"
+        "  }\n"
+        "  protected function mapSellerRoutes() {\n"
+        "    Route::middleware('web')->group(base_path('routes/seller.php'));\n"
+        "  }\n"
+        "  protected function mapInstallRoutes() {\n"
+        "    Route::middleware('web')->namespace($this->namespace)->group(base_path('routes/install.php'));\n"
+        "  }\n"
+        "}\n"
     )
     endpoints, _ = inventory_endpoints(str(d))
-    check("unregistered route file skipped", not any("import_sql" in e["path"] for e in endpoints))
+    check("uncalled mapping method route file skipped", not any("import_sql" in e["path"] for e in endpoints))
+    check("called mapping method route file scanned", any(e["path"] == "/orders" for e in endpoints))
     upload = next((e for e in endpoints if e["path"] == "/aiz-uploader/upload"), None)
     check("registered true positive still flagged", upload is not None and upload["auth"] is False and upload["risk"] == "high")
 
