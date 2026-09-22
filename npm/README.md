@@ -1,5 +1,7 @@
 # grim-mcp
 
+[![npm](https://img.shields.io/npm/v/grim-mcp)](https://www.npmjs.com/package/grim-mcp) [![license](https://img.shields.io/npm/l/grim-mcp)](LICENSE) [![MCP](https://img.shields.io/badge/MCP-compatible-blue)](https://modelcontextprotocol.io) [![Tawakkul Labs](https://img.shields.io/badge/by-Tawakkul%20Labs-0f766e)](https://tawakkul-labs.co.ke)
+
 **Security audit MCP server. Finds the gaps, exposures, and active compromise that other scanners miss.**
 
 `grim-mcp` is the MCP distribution of [GRIM](https://github.com/AbduljabbarBXR/grim). The engine is Python that uses only the standard library. This package bundles it and runs it as a stdio MCP server, so any MCP client can use it with `npx`.
@@ -68,3 +70,7 @@ Every finding includes severity, confidence, location, evidence, remediation, an
 - Smithery: `abdijabarboxer2009/grim-mcp` (https://smithery.ai/server/abdijabarboxer2009/grim-mcp)
 
 MIT licensed.
+
+---
+
+Links: [npm](https://www.npmjs.com/package/grim-mcp) | [GitHub](https://github.com/AbduljabbarBXR/grim) | [Tawakkul Labs](https://tawakkul-labs.co.ke)

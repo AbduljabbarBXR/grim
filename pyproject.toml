@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "grim-mcp"
-version = "0.6.2"
+version = "0.6.3"
 description = "Security audit MCP server: finds code, dependency, exposure, secrets, and active-compromise gaps across any stack"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -24,7 +24,7 @@ classifiers = [
     "Topic :: Security",
 ]
 [project.urls]
-Homepage = "https://github.com/AbduljabbarBXR/grim"
+Homepage = "https://tawakkul-labs.co.ke"
 Repository = "https://github.com/AbduljabbarBXR/grim"
 Issues = "https://github.com/AbduljabbarBXR/grim/issues"
 

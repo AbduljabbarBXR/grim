@@ -1,6 +1,6 @@
 {
   "name": "grim-mcp",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "Security audit for AI agents. Finds code, dependency, exposure, secrets, and active-compromise gaps across any stack, with drift detection and SBOM.",
   "type": "module",
   "bin": {
@@ -40,7 +40,7 @@
   ],
   "license": "MIT",
   "author": "AbduljabbarBXR",
-  "homepage": "https://github.com/AbduljabbarBXR/grim",
+  "homepage": "https://tawakkul-labs.co.ke",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/AbduljabbarBXR/grim.git",
