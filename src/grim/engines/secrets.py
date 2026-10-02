@@ -17,28 +17,61 @@ from ..core.findings import Finding, make_id
 
 MAX_FILE_BYTES = 10 * 1024 * 1024
 MAX_FINDINGS = 800
+# Bytes read to decide whether a file is text or binary. A NUL byte or a high
+# ratio of non-printable bytes means regex scanning is pointless.
+BINARY_SNIFF_BYTES = 8192
+# Upper bound on bytes handed to the regex passes. Scanning every byte of a large
+# tree is the dominant cost in a full scan; secrets live near the top of files.
+MAX_REGEX_BYTES = 2 * 1024 * 1024
+# Bytes that count as text: tab, newline, carriage return, and 0x20..0xff.
+# Anything else (NUL and the C0/C1 control range) marks a file as binary.
+_BINARY_DELETE = bytes(
+    b for b in range(256)
+    if b not in (9, 10, 13) and not (32 <= b <= 255)
+)
+
+
+def _looks_binary(head: bytes) -> bool:
+    """True when the head looks like binary rather than text.
+
+    Compressed and media payloads (PDF, PNG, gzip, wasm) often contain no NUL byte
+    in the first block, so a NUL check alone is not enough to skip them. Uses a
+    translation table so the check is C-speed rather than a Python loop.
+    """
+    sample = head[:BINARY_SNIFF_BYTES]
+    if not sample:
+        return False
+    # Keep tab, newline, carriage return, space..~ and every high byte (UTF-8).
+    text_bytes = sample.translate(None, delete=_BINARY_DELETE)
+    return len(text_bytes) / len(sample) < 0.85
+
+
 SKIP_DIRS = {
     ".git", "node_modules", "vendor", ".venv", "venv", "__pycache__",
     "dist", "build", "coverage", ".next", ".nuxt", ".cache",
 }
 
-# (name, pattern, severity, description)
-PATTERNS: list[tuple[str, re.Pattern, str, str]] = [
-    ("aws-access-key", re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "critical", "AWS access key ID"),
-    ("aws-secret", re.compile(r"(?i)aws_?secret_?access_?key\s*[=:]\s*['\"]?([A-Za-z0-9/+=]{40})"), "critical", "AWS secret access key"),
-    ("google-api-key", re.compile(r"\bAIza[0-9A-Za-z\-_]{35}\b"), "high", "Google API key"),
-    ("stripe-live-secret", re.compile(r"\bsk_live_[0-9a-zA-Z]{24,}\b"), "critical", "Stripe live secret key"),
-    ("stripe-live-publishable", re.compile(r"\bpk_live_[0-9a-zA-Z]{24,}\b"), "medium", "Stripe live publishable key"),
-    ("github-token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}\b"), "critical", "GitHub token"),
-    ("openai-key", re.compile(r"\bsk-[A-Za-z0-9]{20,}\b"), "critical", "OpenAI-style secret key"),
-    ("anthropic-key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}\b"), "critical", "Anthropic API key"),
-    ("slack-token", re.compile(r"\bxox[baprs]-[0-9A-Za-z-]{10,}\b"), "high", "Slack token"),
-    ("private-key", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----"), "critical", "Private key block"),
-    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"), "medium", "JSON Web Token"),
-    ("sendgrid-key", re.compile(r"\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b"), "critical", "SendGrid API key"),
-    ("twilio-sid", re.compile(r"\bAC[a-f0-9]{32}\b"), "high", "Twilio account SID"),
-    ("mailgun-key", re.compile(r"\bkey-[a-z0-9]{32}\b"), "medium", "Mailgun API key"),
-    ("telegram-bot-token", re.compile(r"\b\d{8,10}:AA[A-Za-z0-9_-]{33}\b"), "medium", "Telegram bot token"),
+# (name, pattern, severity, description, [required literal substrings])
+# The optional literal list is a prefilter: `needle in text` is a C-speed substring
+# search, while running the regex over every file is the dominant cost of a large
+# scan. Any pattern whose regex requires a fixed literal gets one, so the regex runs
+# only on files that can possibly match.
+PATTERNS: list[tuple] = [
+    ("aws-access-key", re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "critical", "AWS access key ID", ["AKIA"]),
+    ("aws-secret", re.compile(r"(?i)aws_?secret_?access_?key\s*[=:]\s*['\"]?([A-Za-z0-9/+=]{40})"), "critical", "AWS secret access key", ["aws_secret", "aws-secret"]),
+    ("google-api-key", re.compile(r"\bAIza[0-9A-Za-z\-_]{35}\b"), "high", "Google API key", ["AIza"]),
+    ("stripe-live-secret", re.compile(r"\bsk_live_[0-9a-zA-Z]{24,}\b"), "critical", "Stripe live secret key", ["sk_live_"]),
+    ("stripe-live-publishable", re.compile(r"\bpk_live_[0-9a-zA-Z]{24,}\b"), "medium", "Stripe live publishable key", ["pk_live_"]),
+    ("github-token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}\b"), "critical", "GitHub token", ["ghp_", "gho_", "ghu_", "ghs_", "ghr_"]),
+    ("openai-key", re.compile(r"\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{20,}\b"), "critical", "OpenAI-style secret key", ["sk-"]),
+    ("anthropic-key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}\b"), "critical", "Anthropic API key", ["sk-ant-"]),
+    ("slack-token", re.compile(r"\bxox[baprs]-[0-9A-Za-z-]{10,}\b"), "high", "Slack token", ["xoxb-", "xoxa-", "xoxp-", "xoxr-", "xoxs-"]),
+    ("private-key", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----"), "critical", "Private key block", ["PRIVATE KEY"]),
+    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"), "medium", "JSON Web Token", ["eyJ"]),
+    ("sendgrid-key", re.compile(r"\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b"), "critical", "SendGrid API key", ["SG."]),
+    ("twilio-sid", re.compile(r"\bAC[a-f0-9]{32}\b"), "high", "Twilio account SID", ["AC"]),
+    ("mailgun-key", re.compile(r"\bkey-[a-z0-9]{32}\b"), "medium", "Mailgun API key", ["key-"]),
+    ("telegram-bot-token", re.compile(r"\b\d{8,10}:AA[A-Za-z0-9_-]{33}\b"), "medium", "Telegram bot token", [":AA"]),
     ("basic-auth-url", re.compile(r"https?://[^/\s:@'\"]+:[^/\s@'\"]{6,}@[^\s'\"]+"), "high", "Credentials embedded in URL"),
 ]
 
@@ -57,8 +90,38 @@ SENSITIVE_FILES = {
 }
 
 ENV_SECRET_ASSIGN = re.compile(
-    r"(?im)^([A-Z0-9_]*(?:SECRET|PASSWORD|PASSWD|API_?KEY|TOKEN|AUTH|PRIVATE)[A-Z0-9_]*)\s*=\s*['\"]?([^\s'\"#]{8,})"
+    # Optional declaration prefix so `const`/`let`/`var`/`export`/`final`/`private`/
+    # `public`/`static` and Java/C#/Kotlin modifiers may precede the credential name.
+    # Without this the rule only matched column-0 env-style assignments and missed
+    # every JS/TS/Java constant, which is where real leaks live.
+    r"(?im)^[ \t]*(?:(?:const|let|var|export|final|public|private|protected|static|"
+    r"readonly|inline|internal|virtual|pub|mut|def|val|val\s)\s+)*"
+    r"([A-Za-z0-9_]*(?:SECRET|PASSWORD|PASSWD|PASSPHRASE|API_?KEY|ACCESS_?KEY|"
+    r"TOKEN|AUTH|PRIVATE|CREDENTIAL)[A-Za-z0-9_]*)\s*[:=]\s*['\"]?([^\s'\"#]{8,})"
 )
+
+# Source/config extensions where a credential-shaped assignment is a real leak.
+# Deliberately excludes .json and lockfiles, which are handled by other rules.
+SOURCE_SECRET_EXTS = {
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".vue", ".svelte",
+    ".php", ".rb", ".go", ".rs", ".java", ".kt", ".kts", ".scala",
+    ".cs", ".dart", ".c", ".h", ".cc", ".cpp", ".hpp", ".m", ".mm", ".swift",
+    ".groovy", ".clj", ".cljs", ".ex", ".exs", ".erl", ".hs", ".lua", ".pl",
+    ".pm", ".r", ".jl", ".nim", ".sh", ".bash", ".zsh", ".ps1", ".psm1",
+    ".tf", ".tfvars", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf",
+    ".properties", ".sql",
+}
+_SECRET_BASENAMES = {".env", "credentials", "secrets", "config", "settings"}
+
+
+def _source_ext(name: str) -> bool:
+    """True for source and config files where a literal credential assignment leaks."""
+    lower = name.lower()
+    if lower.endswith(".blade.php"):
+        return True
+    if lower in _SECRET_BASENAMES or lower.startswith(".env"):
+        return True
+    return any(lower.endswith(ext) for ext in SOURCE_SECRET_EXTS)
 
 
 def scan_secrets(path: str, include_skipped: bool = False, stats: dict | None = None) -> list[Finding]:
@@ -189,14 +252,32 @@ def _scan_file(
         return out
 
     try:
-        data = fp.read_bytes()
+        # Only the head is needed to classify the file as text or binary. Reading a
+        # 18 MB PDF in full and regex-scanning it was the single biggest cost in a
+        # large-tree scan.
+        with fp.open("rb") as fh:
+            head = fh.read(BINARY_SNIFF_BYTES)
+            if b"\x00" in head:
+                return out
+            if _looks_binary(head):
+                return out
+            size_left = max(0, size - len(head))
+            data = head + (fh.read(size_left) if size_left else b"")
     except OSError:
         return out
-    if b"\x00" in data[:4096]:
-        return out
+    if len(data) > MAX_REGEX_BYTES:
+        # Keep the head only: a credential past the cap in a huge file is an
+        # acceptable miss versus scanning hundreds of megabytes of text.
+        data = data[:MAX_REGEX_BYTES]
     text = data.decode("utf-8", errors="ignore")
 
-    for pname, pat, sev, desc in PATTERNS:
+    for entry in PATTERNS:
+        pname, pat, sev, desc = entry[:4]
+        needles = entry[4] if len(entry) > 4 else None
+        # Literal prefilter: skip the regex entirely when no required substring is
+        # present. This is what keeps a large-tree scan fast.
+        if needles and not any(n in text for n in needles):
+            continue
         for m in pat.finditer(text):
             value = m.group(1) if m.groups() else m.group(0)
             out.append(
@@ -208,7 +289,7 @@ def _scan_file(
                     owasp="A07:2021",
                     title=f"Possible secret: {desc}",
                     description="Hardcoded credential detected. If this file ships or is committed, treat the secret as compromised.",
-                    location={"file": str(fp), "line": text[: m.start()].count("\n") + 1},
+                    location={"file": str(fp), "line": text.count("\n", 0, m.start()) + 1},
                     evidence=f"{pname}: {_redact(value)}",
                     remediation="Move to environment variables/secret manager and rotate the credential.",
                     engine="grim-secrets",
@@ -216,6 +297,34 @@ def _scan_file(
                 )
             )
             break  # one finding per pattern per file is enough
+
+    # Credential-shaped assignments in source files. The .env rule above only runs on
+    # env files, so `const DB_PASSWORD = "..."` in JS or `String apiKey = "..."` in
+    # Java was invisible. Gated to source extensions to avoid re-flagging config blobs.
+    if _source_ext(name):
+        for m in ENV_SECRET_ASSIGN.finditer(text):
+            key, value = m.group(1), m.group(2)
+            out.append(
+                Finding(
+                    id=make_id("SECR", f"assign-{key}", str(fp)),
+                    severity="high",
+                    confidence=0.75,
+                    category="CWE-798",
+                    owasp="A07:2021",
+                    title=f"Hardcoded credential assignment: {key}",
+                    description=(
+                        "A credential-shaped name is assigned a literal value in source. "
+                        "Move it to an environment variable or secret manager."
+                    ),
+                    location={"file": str(fp), "line": text.count("\n", 0, m.start()) + 1},
+                    evidence=f"{key}={_redact(value)}",
+                    remediation="Move to environment variables/secret manager and rotate the credential.",
+                    engine="grim-secrets",
+                    tags=["secrets", "source"],
+                )
+            )
+            if len(out) > 200:
+                break
 
     if name.startswith(".env") or name.endswith(".env"):
         for m in ENV_SECRET_ASSIGN.finditer(text):
@@ -229,7 +338,7 @@ def _scan_file(
                     owasp="A07:2021",
                     title=f".env secret assignment: {key}",
                     description="Secret stored in an environment file. Ensure the file is not web-accessible, not committed, and not inside deploy artifacts.",
-                    location={"file": str(fp), "line": text[: m.start()].count("\n") + 1},
+                    location={"file": str(fp), "line": text.count("\n", 0, m.start()) + 1},
                     evidence=f"{key}={_redact(value)}",
                     remediation="Keep only on server; rotate if exposure is possible.",
                     engine="grim-secrets",
@@ -289,11 +398,51 @@ ENTROPY_SKIP_NAMES = {
     "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml",
     "composer.lock", "go.sum", "cargo.lock", "poetry.lock", "pipfile.lock",
     "gemfile.lock", "pubspec.lock", "packages.lock.json",
+    # Checksum manifests are hex digests by definition; entropy always fires on them.
+    "sha256sums", "sha256sums.txt", "sha512sums", "sha512sums.txt", "md5sums",
+    "checksums", "checksums.txt", "checksum.txt", "sha1sums", "versions.json",
 }
 ENTROPY_SKIP_EXTS = {
     ".map", ".min.js", ".min.css", ".md", ".markdown", ".rst", ".txt", ".log",
     ".csv", ".tsv", ".svg", ".html", ".htm", ".lock", ".sum", ".json", ".snap",
+    # Checksum and digest files: hex/base64 by construction, never credentials.
+    ".sha256", ".sha512", ".sha1", ".md5", ".sha256sum", ".asc", ".sig", ".pub",
+    # Data and asset payloads that embed compressed or encoded content.
+    ".wasm", ".bin", ".dat", ".pak", ".gz", ".zip", ".bz2", ".xz", ".7z",
+    ".pdf", ".eot", ".woff", ".woff2", ".ttf", ".otf",
 }
+# Directory names whose contents are vendored or generated, not authored source.
+ENTROPY_SKIP_DIR_PARTS = {
+    "vendor", "vendors", "node_modules", "third_party", "thirdparty", "dist",
+    "build", "out", "coverage", ".git", "assets", "static", "public", "media",
+    "fonts", "images", "img", "reference", "references", "fixtures", "testdata",
+    "golden", "snapshots", "__snapshots__", "migrations", "seeds", "locale",
+    "locales", "i18n", "docs", "doc", "examples", "example", "samples",
+}
+
+# A credential is a value bound to a name or returned by an auth API. Bare 20+ char
+# tokens inside data files are almost always identifiers, so the entropy pass only
+# reports a token when it sits in a credential context.
+CREDENTIAL_CONTEXT = re.compile(
+    r"(?i)(?:"
+    r"(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|"
+    r"private[_-]?key|auth|credential|bearer|session|cookie|signature|salt|"
+    r"client[_-]?secret|refresh[_-]?token)\s*[:=]\s*['\"]?"
+    r"|['\"](?:password|secret|token|key)['\"]\s*:\s*['\"]"
+    r"|(?:getenv|process\.env|ENV\[|os\.environ|getString|System\.getenv)\s*[(\[]"
+    r"|Basic\s+[A-Za-z0-9+/]{16,}|Bearer\s+[A-Za-z0-9._~+/-]{16,}"
+    r"|://[^/\s:@'\"]+:[^/\s@'\"]{8,}@"
+    r")"
+)
+# Same signal, matched against the text preceding a token on its own line.
+CREDENTIAL_KEY_ON_LINE = re.compile(
+    r"(?i)(?:"
+    r"(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|"
+    r"private[_-]?key|auth|credential|bearer|session|cookie|signature|salt)\s*[:=]"
+    r"|['\"](?:password|secret|token|key|auth)['\"]\s*:\s*['\"]?"
+    r"|(?:getenv|process\.env|os\.environ)\s*[(\[]\s*['\"]?"
+    r")"
+)
 
 
 def _entropy_enabled(fp: Path) -> bool:
@@ -302,24 +451,57 @@ def _entropy_enabled(fp: Path) -> bool:
         return False
     if any(name.endswith(ext) for ext in ENTROPY_SKIP_EXTS):
         return False
+    parts = {p.lower() for p in fp.parts[:-1]}
+    if parts & ENTROPY_SKIP_DIR_PARTS:
+        return False
     return True
+
+
+def _has_credential_context(text: str, start: int, end: int) -> bool:
+    """True when the token at [start, end) sits in a credential-shaped context.
+
+    Only the token's own line is inspected. A wider window lets an unrelated
+    credential several lines above lend its context to an innocent identifier,
+    which is how data-file identifiers turned into false positives.
+    """
+    line_start = text.rfind("\n", 0, start) + 1
+    line_end = text.find("\n", end)
+    if line_end == -1:
+        line_end = len(text)
+    line = text[line_start:line_end]
+    prefix = text[line_start:start]
+    # `name = <token>` or `name: <token>` where name is credential shaped.
+    if CREDENTIAL_CONTEXT.search(prefix):
+        return True
+    # A credential-shaped key immediately preceding the token on the same line.
+    return bool(CREDENTIAL_KEY_ON_LINE.search(prefix))
 
 
 def _scan_entropy(text: str, fp: Path) -> list[Finding]:
     if not _entropy_enabled(fp):
         return []
     out: list[Finding] = []
+    # Cheap rejections first. Entropy is only computed for tokens that already have
+    # mixed case and a digit, which is what makes entropy meaningful anyway. On a
+    # large tree this ordering removes millions of entropy computations.
+    candidates = []
     for m in HIGH_ENTROPY_CANDIDATE.finditer(text):
         token = m.group(0)
-        if _entropy(token) < 4.3:
-            continue
-        # must look like a generated secret: mixed case plus digits
         if not (any(c.islower() for c in token) and any(c.isupper() for c in token)):
             continue
         if not any(c.isdigit() for c in token):
             continue
         # pure hex is a hash, not a credential (and hashes are handled elsewhere)
         if re.fullmatch(r"[0-9a-fA-F]+", token):
+            continue
+        candidates.append(m)
+    for m in candidates:
+        token = m.group(0)
+        if _entropy(token) < 4.3:
+            continue
+        # A bare high-entropy token in a data file is almost always an identifier,
+        # digest, or base64 asset fragment. Require a credential-shaped name nearby.
+        if not _has_credential_context(text, m.start(), m.end()):
             continue
         out.append(
             Finding(
@@ -330,7 +512,7 @@ def _scan_entropy(text: str, fp: Path) -> list[Finding]:
                 owasp="A07:2021",
                 title="High entropy string (possible credential)",
                 description="A long high entropy token that is not a plain hex hash. Could be a generated credential.",
-                location={"file": str(fp), "line": text[: m.start()].count("\n") + 1},
+                location={"file": str(fp), "line": text.count("\n", 0, m.start()) + 1},
                 evidence=_redact(token),
                 remediation="Verify what this string is; if it is a credential, move it to a secret manager.",
                 engine="grim-secrets",
@@ -386,7 +568,7 @@ def _scan_encoded(text: str, fp: Path) -> list[Finding]:
                         owasp="A07:2021",
                         title="Encoded blob contains credential markers",
                         description="A base64 or hex blob decodes to text containing credential markers.",
-                        location={"file": str(fp), "line": text[: m.start()].count("\n") + 1},
+                        location={"file": str(fp), "line": text.count("\n", 0, m.start()) + 1},
                         evidence=f"encoded({len(token)} chars) decodes to credential-like content",
                         remediation="Decode and inspect; rotate if it is a real credential.",
                         engine="grim-secrets",
@@ -441,7 +623,11 @@ def scan_secrets_history(path: str, max_blobs: int = 2000) -> list[Finding]:
         text = data.encode("utf-8", errors="ignore").decode("utf-8", errors="ignore")
         if "\x00" in text[:4096]:
             continue
-        for pname, pat, sev, desc in PATTERNS:
+        for entry in PATTERNS:
+            pname, pat, sev, desc = entry[:4]
+            needles = entry[4] if len(entry) > 4 else None
+            if needles and not any(n in text for n in needles):
+                continue
             m = pat.search(text)
             if not m:
                 continue

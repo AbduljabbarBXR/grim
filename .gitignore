@@ -13,3 +13,6 @@ npm/python/
 npm/*.tgz
 npm/*.mcpb
 npm/.mcpb-stage/
+dist/
+build/
+*.egg-info/

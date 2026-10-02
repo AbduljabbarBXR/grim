@@ -136,6 +136,39 @@ SOURCES: dict[str, list[re.Pattern]] = {
 }
 
 # Dangerous sinks. (regex, severity, title, description, remediation)
+# SQL sinks are shared across languages: the method names differ per ecosystem but
+# the weakness (CWE-89) is identical, so one rule set covers every language that has
+# an execute/query call. Without this, string-concatenated queries were undetectable.
+SQL_SINK = re.compile(
+    r"\b(?:"
+    r"raw(?:Query|QueryAsync|One|All|Many|Update|Exec)\s*\("
+    r"|where(?:Raw)?\s*\(\s*(?:f?[\"'`]|[A-Za-z_$][\w$]*\s*(?:\+|\.))"
+    r"|(?:db|conn|connection|client|session|store|sqlite|pg|pool)\s*\.\s*"
+    r"(?:query|queryOne|queryRow|queryRaw|queryAll|execute|executeQuery|executeUpdate|exec|"
+    r"run|prepare|all|get|one|unsafe|raw)\s*\("
+    r"|(?:cursor|stmt|statement|ps|prepare)\s*\.\s*(?:execute|executemany|executescript|run|executeQuery|executeUpdate)\s*\("
+    r"|\b(?:execute|executemany|executescript|executeQuery|executeUpdate|executeSql|"
+    r"queryRaw|queryString|createQuery|createNativeQuery)\s*\(\s*(?:f?[\"'`]|[A-Za-z_$][\w$]*\s*(?:\+|\.))"
+    r"|\bfind_by_sql\s*\("
+    r"|\bexecuteQuery\s*\(\s*(?:f?[\"'`]|\w+\s*\+)"
+    r"|\bexec(?:ute)?SQL\b"
+    r")",
+    re.I,
+)
+SQL_SINK_RULE = (
+    SQL_SINK, "high", "SQL query built with possibly tainted input",
+    "Untrusted input may reach a SQL execution sink; concatenated queries allow injection.",
+    "Use parameterized queries or prepared statements with bound values.",
+)
+
+
+def _with_sql(rules: list[tuple[re.Pattern, str, str, str, str]]) -> list[tuple[re.Pattern, str, str, str, str]]:
+    """Append the shared SQL sink rule when the language does not already have one."""
+    if any(r[0].pattern == SQL_SINK.pattern for r in rules):
+        return rules
+    return rules + [SQL_SINK_RULE]
+
+
 SINKS: dict[str, list[tuple[re.Pattern, str, str, str, str]]] = {
     "python": [
         (re.compile(r"\b(eval|exec)\s*\("), "high", "eval/exec with possibly tainted input",
@@ -272,6 +305,9 @@ SINKS: dict[str, list[tuple[re.Pattern, str, str, str, str]]] = {
          "Untrusted input may reach Start-Process.", "Validate input strictly."),
     ],
 }
+
+# Every language with a database call gets the shared SQL sink rule.
+SINKS = {lang: _with_sql(rules) for lang, rules in SINKS.items()}
 
 
 def rules_hash() -> str:

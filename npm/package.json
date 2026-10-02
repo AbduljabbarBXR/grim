@@ -1,6 +1,6 @@
 {
   "name": "grim-mcp",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "Security audit for AI agents. Finds code, dependency, exposure, secrets, and active-compromise gaps across any stack, with drift detection and SBOM.",
   "type": "module",
   "bin": {
@@ -9,7 +9,9 @@
   "files": [
     "src",
     "python",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "scripts"
   ],
   "scripts": {
     "sync": "node scripts/sync-python.mjs",
