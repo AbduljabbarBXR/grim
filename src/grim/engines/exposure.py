@@ -121,7 +121,12 @@ class DirSource(Source):
     def __init__(self, root: str):
         self.root = Path(root)
         self.label = str(self.root)
-        self.prefix = str(self.root).replace(os.sep, "/").strip("/")
+        # Only the root's own basename is treated as web context, and only when that
+        # basename is itself a web-served segment. Using the full absolute path here
+        # misclassified every target under /data/data/<pkg>/files/... (Android, Termux)
+        # as web served because "files" is a web segment name.
+        base = self.root.resolve().name.lower()
+        self.prefix = base if base in WEB_SEGMENTS or base in UPLOAD_SEGMENTS else ""
 
     def iter_items(self) -> Iterator[tuple[Entry, Callable[[int], bytes]]]:
         for r, dirs, files in os.walk(self.root):

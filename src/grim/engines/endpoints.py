@@ -258,18 +258,104 @@ def inventory_endpoints(path: str, stats: dict | None = None) -> tuple[list[dict
     if limits.reached(len(files), max_files):
         reasons.append(f"file limit reached ({max_files})")
 
-    findings = _to_findings(endpoints[:MAX_ENDPOINTS])
+    # Taint map: file -> {"titles": [...], "lines": {...}}. The flow engine already
+    # proves request input reaches a sink; endpoints consume that instead of guessing
+    # risk from route shape alone.
+    taint_map = _taint_by_file(p, files, max_files)
+    if taint_map:
+        _apply_taint(endpoints, taint_map)
+
+    findings = _to_findings(endpoints[:MAX_FINDINGS])
     if stats is not None:
         stats.update(
             {
                 "files_scanned": len(files),
                 "endpoints": len(endpoints),
                 "findings": len(findings),
+                "tainted_files": len(taint_map),
                 "truncated": bool(reasons),
                 "reasons": reasons,
             }
         )
     return endpoints, findings
+
+
+def _taint_by_file(root: Path, files: list[Path], max_files: int) -> dict[str, dict]:
+    """Run the flow engine once and group its findings by file.
+
+    Keyed by path relative to the scan root so it joins with the endpoint records,
+    which carry relative file paths. Failure is non-fatal: endpoint inventory still
+    works without taint data, it just ranks on route shape as before.
+    """
+    try:
+        from .flow import scan_flow
+    except Exception:
+        return {}
+    try:
+        flow_findings = scan_flow(str(root), max_files=max_files)
+    except Exception:
+        return {}
+    out: dict[str, dict] = {}
+    try:
+        root_abs = root.resolve()
+    except OSError:
+        root_abs = root
+    for f in flow_findings:
+        loc = f.location.get("file")
+        if not loc:
+            continue
+        try:
+            rel = str(Path(loc).resolve().relative_to(root_abs))
+        except (ValueError, OSError):
+            continue
+        entry = out.setdefault(rel, {"sinks": []})
+        entry["sinks"].append({"title": f.title, "line": int(f.location.get("line", 0) or 0)})
+    return out
+
+
+def _apply_taint(endpoints: list[dict], taint_map: dict[str, dict]) -> None:
+    """Re-rank endpoints whose file has a proven taint flow.
+
+    A route is tainted when a sink line falls inside its handler body. The route's
+    declared line is the handler start, so the window runs to the next route in the
+    same file; a file with several routes only taints routes with an in-body hit.
+    Rank, reason and the inputs flag are recomputed through _endpoint's own logic so
+    the output vocabulary stays identical to the untainted path.
+    """
+    by_file: dict[str, list[dict]] = {}
+    for e in endpoints:
+        by_file.setdefault(str(e.get("file", "")), []).append(e)
+    for rel, eps in by_file.items():
+        eps.sort(key=lambda e: int(e.get("line", 0) or 0))
+        entry = taint_map.get(rel)
+        if not entry:
+            continue
+        single = len(eps) == 1
+        for idx, e in enumerate(eps):
+            start = int(e.get("line", 0) or 0)
+            # Attribute sinks to the handler whose body contains them. With one route
+            # in the file, attribution is unambiguous. With several, each sink belongs
+            # to the route declared above it, up to the next route declaration.
+            if single:
+                hits = list(entry["sinks"])[:5]
+            else:
+                end = int(eps[idx + 1].get("line", 0) or 0) if idx + 1 < len(eps) else 0
+                if not end:
+                    continue
+                hits = [s2 for s2 in entry["sinks"] if start <= s2["line"] <= end]
+                if not hits:
+                    continue
+            titles: list[str] = []
+            for h in hits:
+                if h["title"] not in titles:
+                    titles.append(h["title"])
+            taint = {"titles": titles, "lines": [h["line"] for h in hits]}
+            updated = _endpoint(
+                e["framework"], e["method"], e["path"], Path(rel), Path(rel).parent,
+                start, bool(e["auth"]), bool(e["inputs"]), taint=taint,
+            )
+            for key in ("tainted", "taint_sinks", "taint_lines", "risk", "reason", "inputs"):
+                e[key] = updated[key]
 
 
 def _walk(root: Path, max_files: int) -> list[Path]:
@@ -496,14 +582,28 @@ def _file_route(fp: Path, root: Path, markers: tuple[str, ...], api_prefix: str)
 
 
 def _endpoint(
-    framework: str, method: str, path: str, fp: Path, root: Path, line: int, auth: bool, inputs: bool
+    framework: str, method: str, path: str, fp: Path, root: Path, line: int, auth: bool, inputs: bool,
+    taint: dict | None = None,
 ) -> dict:
     try:
         rel = str(fp.relative_to(root))
     except ValueError:
         rel = str(fp)
     sensitive = bool(SENSITIVE.search(path))
-    if inputs and not auth:
+    # Taint data from the flow engine: a route whose handler passes request input to
+    # a dangerous sink is risky on reachability, not on route shape alone. Without
+    # this, /users with SQL injection ranked low while /debug with no input ranked high.
+    taint = taint or {}
+    taint_titles: list[str] = list(taint.get("titles", ()))
+    taint_lines: set[int] = set(taint.get("lines", ()))
+    if taint_titles:
+        if not auth:
+            risk = "high"
+            reason = f"unauthenticated route with tainted input reaching {taint_titles[0]}"
+        else:
+            risk = "high"
+            reason = f"tainted input reaches {taint_titles[0]}"
+    elif inputs and not auth:
         risk, reason = "high", "unauthenticated route with a request input surface"
     elif sensitive and not auth:
         risk, reason = "high", "unauthenticated sensitive route"
@@ -518,7 +618,12 @@ def _endpoint(
         "file": rel,
         "line": line,
         "auth": auth,
-        "inputs": inputs,
+        # Report an input surface when either the route body shows request access or
+        # the flow engine proved request input reaches a sink.
+        "inputs": bool(inputs or taint_titles),
+        "tainted": bool(taint_titles),
+        "taint_sinks": taint_titles[:5],
+        "taint_lines": sorted(taint_lines)[:10],
         "risk": risk,
         "reason": reason,
     }

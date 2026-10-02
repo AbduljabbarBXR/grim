@@ -91,8 +91,9 @@ EXT_LANG = {
     ".hs": "haskell",
 }
 
-# (id, regex, severity, title, description, remediation, languages)
-RULES: list[tuple[str, re.Pattern, str, str, str, str, set[str]]] = [
+# (id, regex, severity, title, description, remediation, languages, [cwe])
+# The cwe element is optional; rules without it fall back to a severity-derived CWE.
+RULES: list[tuple] = [
     (
         "php-client-mimes",
         re.compile(r"mimes\s*:\s*[^,\n]*\$(?:request|_GET|_POST|_REQUEST)"),
@@ -848,6 +849,256 @@ RULES: list[tuple[str, re.Pattern, str, str, str, str, set[str]]] = [
         "Validate inputs and avoid the shell.",
         {"haskell"},
     ),
+    # ---- Cryptography, TLS, and transport (CWE-327/328/330/295/297) ----
+    # The rule set above is entirely RCE/injection/deserialization. These cover the
+    # weak-crypto and broken-transport classes that a security scanner is expected to
+    # report and that were previously undetectable.
+    (
+        "crypto-md5",
+        re.compile(r"(?i)\b(?:md5|hashlib\.md5|MessageDigest\.getInstance\(\s*[\"']MD5|createHash\(\s*[\"']md5|DigestUtils::md5|MD5\.\w+)"),
+        "medium",
+        "MD5 used (broken hash)",
+        "MD5 is collision-broken and unfit for integrity, signatures, or password hashing.",
+        "Use SHA-256 for integrity; use argon2/bcrypt/scrypt for passwords.",
+        {"python", "js", "java", "kotlin", "csharp", "php", "ruby", "go", "rust", "perl", "r", "scala", "dart", "elixir", "powershell", "shell", "all"},
+        "CWE-327",
+    ),
+    (
+        "crypto-sha1",
+        re.compile(r"(?i)\b(?:sha1|hashlib\.sha1|MessageDigest\.getInstance\(\s*[\"']SHA-?1|createHash\(\s*[\"']sha1|SHA1\.\w+)"),
+        "medium",
+        "SHA-1 used (weak hash)",
+        "SHA-1 is collision-broken and must not be used for signatures or integrity.",
+        "Use SHA-256 or stronger.",
+        {"python", "js", "java", "kotlin", "csharp", "php", "ruby", "go", "rust", "perl", "r", "scala", "dart", "elixir", "powershell", "shell", "all"},
+        "CWE-327",
+    ),
+    (
+        "crypto-des-rc2",
+        re.compile(r"(?i)\b(?:des|desede|triple.?des|rc2|rc4|blowfish|arcfour|DES\.getInstance|RC4)\b"),
+        "high",
+        "Broken cipher (DES/RC4/3DES)",
+        "DES and RC4 are cryptographically broken; traffic is recoverable.",
+        "Use AES-GCM or ChaCha20-Poly1305.",
+        {"python", "js", "java", "kotlin", "csharp", "php", "ruby", "go", "rust", "perl", "scala", "elixir", "all"},
+        "CWE-327",
+    ),
+    (
+        "crypto-ecb",
+        re.compile(r"(?i)\b(?:AES/ECB|DES/ECB|RC4|/\s*ECB\b|Mode\.ECB|Cipher\.getInstance\(\s*[\"'][^\"']*ECB)"),
+        "high",
+        "ECB mode used",
+        "ECB leaks structure of plaintext and is deterministic; identical blocks encrypt identically.",
+        "Use an authenticated mode such as AES-GCM or ChaCha20-Poly1305.",
+        {"python", "js", "java", "kotlin", "csharp", "php", "ruby", "go", "rust", "scala", "all"},
+        "CWE-327",
+    ),
+    (
+        "crypto-static-iv",
+        re.compile(r"(?i)(?:new\s+(?:byte\[\]|Buffer)\s*\(\s*16\s*\)\s*[,)]|iv\s*[:=]\s*['\"]0{16,}['\"]|nonce\s*=\s*['\"]0{8,}['\"]|static\s+final\s+(?:byte|String)\s+(?:IV|NONCE)\s*=\s*['\"]0)"),
+        "high",
+        "Static or zero IV/nonce reused for encryption",
+        "A fixed IV destroys semantic security and enables known-plaintext recovery.",
+        "Generate a fresh random IV/nonce per message and store it with the ciphertext.",
+        {"python", "js", "java", "kotlin", "csharp", "php", "go", "rust", "scala", "all"},
+        "CWE-329",
+    ),
+    (
+        "crypto-hardcoded-key",
+        re.compile(r"(?i)\b(?:SECRET_?KEY|ENCRYPTION_?KEY|MASTER_?KEY|PRIVATE_?KEY|AES_?KEY)\s*[:=]\s*[\"'][A-Za-z0-9+/=_-]{8,}[\"']"),
+        "high",
+        "Hardcoded encryption key",
+        "A key committed to source is a key an attacker owns; ciphertext becomes readable.",
+        "Load keys from a secret manager or KMS at runtime.",
+        {"python", "js", "java", "kotlin", "csharp", "php", "ruby", "go", "rust", "scala", "dart", "elixir", "all"},
+        "CWE-321",
+    ),
+    (
+        "crypto-weak-random",
+        re.compile(r"(?<![\w.])(?:random\.random|random\.randint|random\.choice|Math\.random|rand\(\)|srand\s*\(\s*(?:time|NULL|0)|new\s+Random\s*\(\s*\))"),
+        "medium",
+        "Non-cryptographic randomness for a security value",
+        "Predictable randomness produces guessable tokens, keys, and nonces.",
+        "Use secrets/os.urandom for security values; random is fine for non-security use.",
+        {"python", "js", "java", "kotlin", "csharp", "php", "ruby", "dart", "scala", "all"},
+        "CWE-330",
+    ),
+    (
+        "tls-verify-disabled",
+        re.compile(r"(?i)(?:verify\s*=\s*False|rejectUnauthorized\s*:\s*false|InsecureSkipVerify\s*:\s*true|"
+                   r"verify\s*=\s*False|ssl\._create_unverified_context|CERT_NONE|"
+                   r"curl\s+(?:-k|--insecure)\b|ServicePointManager\.ServerCertificateValidationCallback)"),
+        "high",
+        "TLS certificate verification disabled",
+        "Disabling verification allows trivial man-in-the-middle interception of all traffic.",
+        "Verify certificates against a trusted CA bundle; pin where appropriate.",
+        {"python", "js", "java", "kotlin", "csharp", "php", "ruby", "go", "rust", "scala", "shell", "dockerfile", "all"},
+        "CWE-295",
+    ),
+    (
+        "tls-sslv3",
+        re.compile(r"(?i)\b(?:SSLv2|SSLv3|TLSv1(?:\.[01])?\b|PROTOCOL_SSLv3|ssl\.PROTOCOL_TLSv1\b|NODE_TLS_REJECT_UNAUTHORIZED\s*=\s*0)"),
+        "high",
+        "Obsolete TLS/SSL protocol version allowed",
+        "SSLv2/SSLv3/TLSv1/1.1 are deprecated and vulnerable to downgrade and padding attacks.",
+        "Require TLS 1.2 or higher and disable legacy protocol versions.",
+        {"python", "js", "java", "csharp", "ruby", "go", "rust", "scala", "shell", "dockerfile", "all"},
+        "CWE-327",
+    ),
+    (
+        "tls-chttp",
+        re.compile(r"(?i)\b(?:http\.client\.HTTPConnection|urllib\.request\.urlopen\(\s*[\"']http://|requests\.(?:get|post|put|delete|patch|head)\(\s*[\"']http://)"),
+        "low",
+        "Cleartext HTTP request to a remote endpoint",
+        "Credentials and data sent over plain HTTP are readable and modifiable in transit.",
+        "Use https:// for all remote calls.",
+        {"python", "js", "java", "kotlin", "csharp", "php", "go", "all"},
+        "CWE-319",
+    ),
+    # ---- Filesystem, permissions, and path handling (CWE-22/732/276/377/59) ----
+    (
+        "path-traversal",
+        re.compile(r"(?i)(?:open|readFile|readFileSync|createReadStream|sendFile|File\.open|os\.remove|unlink|"
+                   r"Path\s*\(|Files\.(?:read|write|delete|copy|newInputStream|newOutputStream))\s*\(\s*[^)\n]{0,80}?"
+                   r"(?:\+\s*\w+|\$\{|%s?\s*[,)]|f[\"']|format\()"),
+        "high",
+        "Filesystem path built from input (path traversal)",
+        "Concatenating input into a path allows ../ escapes to read or write outside the intended directory.",
+        "Resolve the path and verify it stays within the allowed base directory.",
+        {"python", "js", "java", "kotlin", "csharp", "php", "ruby", "go", "rust", "scala", "dart", "all"},
+        "CWE-22",
+    ),
+    (
+        "perm-world-writable",
+        re.compile(r"(?i)(?:chmod\s*\(\s*[^)\n]{0,40}?0o?7(?:77|66)\b|os\.chmod\([^)\n]*0o?7[0-7]{2}|"
+                   r"chmod\s+(?:-R\s+)?(?:777|666|a\+w)\b|SetPermissions|File\.SetUnixFileMode)"),
+        "high",
+        "World-writable file or directory permissions",
+        "World-writable paths let any local user modify code, configuration, or startup files.",
+        "Grant the narrowest permissions that work; 644 for files, 755 for directories.",
+        {"python", "js", "java", "kotlin", "csharp", "php", "ruby", "shell", "perl", "dart", "all"},
+        "CWE-732",
+    ),
+    (
+        "perm-insecure-temp",
+        re.compile(r"(?i)(?:NamedTemporaryFile\s*\(\s*delete\s*=\s*False|mktemp\s+(?:-d\s+)?[\"']?/tmp|"
+                   r"tempfile\.mktemp\s*\(|/tmp/[\w.{}$-]*[\"']?\s*\)|\"\s*\+\s*pid\s*\+\s*\"\.log)"),
+        "medium",
+        "Insecure temporary file creation",
+        "Predictable temp paths in a shared directory allow symlink races and file clobbering.",
+        "Use tempfile.mkstemp/mkdtemp or the language equivalent that creates the file atomically.",
+        {"python", "js", "java", "kotlin", "csharp", "php", "ruby", "shell", "perl", "c", "cpp", "all"},
+        "CWE-377",
+    ),
+    (
+        "path-symlink-follow",
+        re.compile(r"(?i)(?:follow_symlinks\s*=\s*True|followSymlinks\s*\(\s*true|os\.symlink\s*\(|"
+                   r"readlink\s+-f|eval\s*\(\s*[\"']\s*\.\s*/)"),
+        "low",
+        "Symlink handling that follows links outside the target",
+        "Following symlinks without bounds checks lets an attacker redirect access.",
+        "Resolve the real path and validate it against the allowed base directory.",
+        {"python", "js", "java", "kotlin", "csharp", "php", "ruby", "shell", "perl", "all"},
+        "CWE-59",
+    ),
+    # ---- Web, session, and cross-origin (CWE-352/942/1004/346/20-family) ----
+    (
+        "cors-wildcard-credentials",
+        re.compile(r"(?i)(?:Access-Control-Allow-Origin[\"']?\s*[:,]\s*[\"']?\*|"
+                   r"allow_origins\s*=\s*[\"']?\*[\"']?|cors\s*\(\s*\{[^}]{0,80}origin\s*:\s*[\"']?\*|"
+                   r"addHeader\(\s*[\"']Access-Control-Allow-Origin[\"']\s*,\s*[\"']\*)"),
+        "high",
+        "Wildcard CORS origin allowed",
+        "A wildcard origin lets any site read authenticated responses.",
+        "Allowlist explicit trusted origins instead of *.",
+        {"python", "js", "java", "kotlin", "csharp", "php", "ruby", "go", "rust", "scala", "dart", "all"},
+        "CWE-942",
+    ),
+    (
+        "cors-credentials-with-wildcard",
+        re.compile(r"(?i)(?:Access-Control-Allow-Credentials[\"']?\s*[:,]\s*[\"']?true|"
+                   r"credentials\s*:\s*true|supports_credentials\s*=\s*True)"),
+        "medium",
+        "Credentialed cross-origin request permitted",
+        "Combined with a permissive origin policy this exposes authenticated user data to other sites.",
+        "Restrict origins to an explicit allowlist and scope credentials narrowly.",
+        {"python", "js", "java", "kotlin", "csharp", "php", "ruby", "go", "scala", "dart", "all"},
+        "CWE-942",
+    ),
+    (
+        "csrf-protection-disabled",
+        re.compile(r"(?i)(?:csrf(?:_exempt|_off)?\s*[:=]\s*(?:False|false|0)|"
+                   r"WTF_CSRF_ENABLED\s*=\s*False|xsrf(?:_off)?\s*[:=]\s*(?:False|false)|"
+                   r"@csrf\.exempt|validate_csrf\s*=\s*False|noVerify\s*=\s*[\"']?csrf)"),
+        "high",
+        "CSRF protection disabled",
+        "Without CSRF validation an attacker can force authenticated state-changing requests.",
+        "Enable CSRF tokens or SameSite cookies on every state-changing route.",
+        {"python", "js", "java", "kotlin", "csharp", "php", "ruby", "go", "scala", "django", "flask", "all"},
+        "CWE-352",
+    ),
+    (
+        "cookie-insecure-flags",
+        re.compile(r"(?i)(?:secure\s*:\s*false|httpOnly\s*:\s*false|SESSION_COOKIE_SECURE\s*=\s*False|"
+                   r"SESSION_COOKIE_HTTPONLY\s*=\s*False|Cookie\s*\(\s*['\"]?[^)]{0,80}?secure\s*[:=]\s*False)"),
+        "medium",
+        "Session cookie missing Secure or HttpOnly",
+        "Without Secure the cookie travels over plaintext; without HttpOnly script can read it.",
+        "Set Secure, HttpOnly, and SameSite on every session cookie.",
+        {"python", "js", "java", "kotlin", "csharp", "php", "ruby", "go", "scala", "dart", "all"},
+        "CWE-1004",
+    ),
+    # ---- Deserialization and template injection (CWE-502/1336/94) ----
+    (
+        "template-injection",
+        re.compile(r"(?i)(?:Template\s*\(\s*(?:f[\"']|[\"'][^\"']*\{\{|\w+\s*\+)[\s\S]{0,120}?\.render\s*\(|"
+                   r"Jinja2\s*\(\s*\w+\s*\)|render_template_string\s*\(|Template\s*\(\s*\w+\s*\)|"
+                   r"new\s+Template\s*\(\s*(?:f?[\"']|\w+\s*\+)|"
+                   r"velocity.*\$!\{|handlebars.*compile\s*\(\s*(?:f?[\"']|\w+\s*\+))"),
+        "high",
+        "Server-side template injection risk",
+        "Rendering a template built from input lets an attacker inject executable template syntax.",
+        "Render fixed templates and pass data as context variables, never as template text.",
+        {"python", "js", "java", "kotlin", "csharp", "php", "ruby", "go", "scala", "all"},
+        "CWE-1336",
+    ),
+    (
+        "xml-external-entity",
+        re.compile(r"(?i)(?:XMLParser\s*\(\s*\)|etree\.fromstring\s*\(|lxml\.etree\.parse\s*\(|"
+                   r"DocumentBuilderFactory\.newInstance\s*\(\s*\)|SAXParserFactory\.newInstance\s*\(\s*\)|"
+                   r"XML\.ReadToEnd\s*\(|XmlDocument\s*\(\s*\)|loadHtmlString\s*\()"),
+        "medium",
+        "XML parser without external-entity hardening (XXE review)",
+        "Parsers that resolve external entities or DTDs can read local files and make SSRF requests.",
+        "Disable DTDs and external entity resolution; verify this review point per parser.",
+        {"python", "js", "java", "kotlin", "csharp", "php", "ruby", "scala", "all"},
+        "CWE-611",
+    ),
+    (
+        "insecure-deserialization",
+        re.compile(r"(?i)(?:yaml\.load\s*\((?![^)]*Safe)|yaml\.unsafe_load\s*\(|"
+                   r"ObjectInputStream\b[^;]{0,80}?readObject|readObject\s*\(\s*\)|"
+                   r"enableDefaultTyping|SerializationUtils\.deserialize|"
+                   r"Marshal\.load\s*\(|JSON\.parseObject\s*\(\s*\w+\s*,\s*\w+\.class|"
+                   r"unserialize\s*\(\s*\$)"),
+        "high",
+        "Unsafe deserialization of untrusted data",
+        "Deserializing attacker-controlled data can lead to remote code execution.",
+        "Use JSON or a restricted loader such as yaml.safe_load.",
+        {"python", "js", "java", "kotlin", "csharp", "php", "ruby", "go", "scala", "all"},
+        "CWE-502",
+    ),
+    # ---- Assertion and validation gaps (CWE-617/20/1284) ----
+    (
+        "assert-for-validation",
+        re.compile(r"(?i)\bassert\s+(?!\w+\s*\()\s*[^\n]{0,100}?(?:user|input|password|token|role|admin|auth|request|param)"),
+        "medium",
+        "assert used for input validation",
+        "assert is removed under python -O, silently disabling the check in production.",
+        "Raise an explicit exception instead of asserting.",
+        {"python"},
+        "CWE-617",
+    ),
 ]
 
 IP_URL = re.compile(r"https?://(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?::\d+)?")
@@ -1078,7 +1329,9 @@ def _scan_text(text: str, fp: Path, lang: str) -> list[Finding]:
     per_rule = limits.resolve("GRIM_MAX_RULE_MATCHES", MAX_RULE_MATCHES)
     per_file = limits.resolve("GRIM_MAX_FILE_FINDINGS", MAX_FILE_FINDINGS)
 
-    for rid, pat, sev, title, desc, fix, langs in active_rules():
+    for rule in active_rules():
+        rid, pat, sev, title, desc, fix, langs = rule[:7]
+        cwe = rule[7] if len(rule) > 7 else None
         if "all" not in langs and lang not in langs:
             continue
         hits = 0
@@ -1089,7 +1342,7 @@ def _scan_text(text: str, fp: Path, lang: str) -> list[Finding]:
                     id=make_id("CODE", f"{rid}@{line}", str(fp)),
                     severity=sev,
                     confidence=0.9 if rid in {"php-client-mimes", "php-request-exec", "php-include-request", "js-child-process-exec"} else 0.7,
-                    category="CWE-94" if sev == "critical" else "CWE-20",
+                    category=cwe or ("CWE-94" if sev == "critical" else "CWE-20"),
                     owasp="A03:2021",
                     title=title,
                     description=desc,
