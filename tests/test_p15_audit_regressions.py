@@ -7,7 +7,9 @@ runnable on Termux: python3 tests/test_p15_audit_regressions.py
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -59,9 +61,11 @@ def test_android_path_is_not_web_served() -> None:
     segment, so every target on Android/Termux was classified as web served.
     """
     print("android/termux web-path false positive")
-    base = Path(os.environ.get("TMPDIR", "/data/data/com.termux/files/usr/tmp")) / "grim_regress_wp"
+    # tempfile.gettempdir() honours TMPDIR on Linux and Termux and falls back
+    # correctly elsewhere. A hardcoded Termux path made this test fail on CI.
+    base = Path(tempfile.gettempdir()) / "grim_regress_wp"
     if base.exists():
-        subprocess.run(["rm", "-rf", str(base)], check=False)
+        shutil.rmtree(base, ignore_errors=True)
     write(base / "src" / "app.py", "print('hello')\n")
     write(base / "src" / "main.c", "int main(void){return 0;}\n")
     write(base / "deploy.sh", "#!/bin/sh\necho hi\n")
@@ -84,7 +88,7 @@ def test_android_path_is_not_web_served() -> None:
 
     # The prefix must be empty for an ordinary project root.
     check("prefix empty for plain project", DirSource(str(base)).prefix == "", DirSource(str(base)).prefix)
-    subprocess.run(["rm", "-rf", str(base)], check=False)
+    shutil.rmtree(base, ignore_errors=True)
 
 
 # ------------------------------------------------------------------ A2 SQL sinks
@@ -367,16 +371,12 @@ def test_version_consistency() -> None:
 
     pkg = ROOT / "npm" / "package.json"
     if pkg.is_file():
-        import json as _json
-
-        npm_ver = _json.loads(pkg.read_text(encoding="utf-8")).get("version")
+        npm_ver = json.loads(pkg.read_text(encoding="utf-8")).get("version")
         check("npm version matches", npm_ver == __version__, f"{npm_ver} vs {__version__}")
 
     server = ROOT / "npm" / "server.json"
     if server.is_file():
-        import json as _json
-
-        data = _json.loads(server.read_text(encoding="utf-8"))
+        data = json.loads(server.read_text(encoding="utf-8"))
         check("server.json version matches", data.get("version") == __version__, f"{data.get('version')} vs {__version__}")
         for pkg_entry in data.get("packages", []):
             check(
@@ -472,8 +472,6 @@ def test_cli_subcommands_accept_positional_path() -> None:
 
 def test_mcp_handshake_reports_current_version() -> None:
     print("MCP handshake version")
-    import json as _json
-
     env = dict(os.environ)
     env["PYTHONPATH"] = str(ROOT / "src")
     proc = subprocess.run(

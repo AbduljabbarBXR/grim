@@ -465,10 +465,6 @@ def _has_credential_context(text: str, start: int, end: int) -> bool:
     which is how data-file identifiers turned into false positives.
     """
     line_start = text.rfind("\n", 0, start) + 1
-    line_end = text.find("\n", end)
-    if line_end == -1:
-        line_end = len(text)
-    line = text[line_start:line_end]
     prefix = text[line_start:start]
     # `name = <token>` or `name: <token>` where name is credential shaped.
     if CREDENTIAL_CONTEXT.search(prefix):

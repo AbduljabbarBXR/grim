@@ -7,5 +7,3 @@ recursive-exclude tests __pycache__ *
 # The default YARA ruleset is runtime data, not code: without it the YARA adapter
 # is inert on a pip install, which is the defect the 0.6.4 audit flagged.
 include src/grim/feeds/default_rules.yar
-recursive-exclude src **/__pycache__ *
-recursive-exclude src *.py[cod]
