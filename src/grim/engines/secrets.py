@@ -7,8 +7,10 @@ import math
 import os
 import re
 import subprocess
+import tarfile
 import threading
 import time
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -139,7 +141,20 @@ def scan_secrets(path: str, include_skipped: bool = False, stats: dict | None = 
     start = time.monotonic()
     dl = limits.deadline()
 
-    if p.is_file():
+    if p.is_file() and _is_archive(p):
+        # `scan` accepts an archive, so secrets inside one must be found too. Members
+        # are read in memory; the on-disk cache key does not apply to them.
+        member_cap = 200_000 if limits.is_unlimited(file_cap) else file_cap
+        byte_cap = limits.resolve("GRIM_MAX_SECRET_FILE_BYTES", MAX_FILE_BYTES)
+        members = _iter_archive_files(p, member_cap, min(byte_cap, MAX_REGEX_BYTES))
+        state["files"] = len(members)
+        for name, text in members:
+            if limits.expired(dl):
+                reasons.append("time budget reached")
+                break
+            virtual = Path(name)
+            findings.extend(_scan_text(text, virtual))
+    elif p.is_file():
         state["files"] = 1
         findings.extend(_scan_file(p, root=p.parent, include_skipped=include_skipped, state=state, lock=lock))
     else:
@@ -180,6 +195,67 @@ def scan_secrets(path: str, include_skipped: bool = False, stats: dict | None = 
             }
         )
     return findings
+
+
+def _is_archive(path: Path) -> bool:
+    """True when the path is a tar or zip archive GRIM can open."""
+    try:
+        if zipfile.is_zipfile(path):
+            return True
+    except OSError:
+        return False
+    return path.name.lower().endswith(
+        (".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz")
+    )
+
+
+def _iter_archive_files(path: Path, max_files: int, max_bytes: int) -> list[tuple[str, str]]:
+    """Return (member name, text) for text members inside an archive.
+
+    Binary members are skipped using the same sniff test as on-disk files, and each
+    member is size-capped so a crafted archive cannot exhaust memory.
+    """
+    out: list[tuple[str, str]] = []
+
+    def _add(name: str, raw: bytes) -> None:
+        if len(out) >= max_files or not name or name.endswith("/"):
+            return
+        head = raw[:BINARY_SNIFF_BYTES]
+        if b"\x00" in head or _looks_binary(head):
+            return
+        out.append((name, raw[:max_bytes].decode("utf-8", errors="ignore")))
+
+    try:
+        if zipfile.is_zipfile(path):
+            with zipfile.ZipFile(path) as zf:
+                for info in zf.infolist():
+                    if len(out) >= max_files:
+                        break
+                    if info.is_dir():
+                        continue
+                    try:
+                        with zf.open(info) as fh:
+                            _add(info.filename, fh.read(max_bytes + 1))
+                    except (OSError, zipfile.BadZipFile, RuntimeError, NotImplementedError):
+                        continue
+            return out
+        with tarfile.open(path, "r:*") as tf:
+            for member in tf:
+                if len(out) >= max_files:
+                    break
+                if not member.isfile():
+                    continue
+                try:
+                    fh = tf.extractfile(member)
+                    if fh is None:
+                        continue
+                    with fh:
+                        _add(member.name, fh.read(max_bytes + 1))
+                except (OSError, tarfile.TarError):
+                    continue
+    except (OSError, tarfile.TarError, zipfile.BadZipFile, EOFError):
+        return out
+    return out
 
 
 def _walk_files(root: Path, include_skipped: bool, cap: int) -> list[Path]:
@@ -271,6 +347,27 @@ def _scan_file(
         data = data[:MAX_REGEX_BYTES]
     text = data.decode("utf-8", errors="ignore")
 
+    out.extend(_scan_text(text, fp, include_skipped))
+    return out
+
+
+def _redact(value: str) -> str:
+    v = value.strip().strip("'\"")
+    if len(v) <= 8:
+        return "***"
+    return f"{v[:4]}…{v[-2:]}(len={len(v)})"
+
+
+
+def _scan_text(text: str, fp: Path, include_skipped: bool = False) -> list[Finding]:
+    """Run every text-level secret rule over already-decoded content.
+
+    Used for archive members, which are read into memory rather than opened
+    from disk, and for regular files after they have been read and sniffed.
+    """
+    name = fp.name
+    out: list[Finding] = []
+
     for entry in PATTERNS:
         pname, pat, sev, desc = entry[:4]
         needles = entry[4] if len(entry) > 4 else None
@@ -351,14 +448,6 @@ def _scan_file(
     out.extend(_scan_entropy(text, fp))
     out.extend(_scan_encoded(text, fp))
     return out
-
-
-def _redact(value: str) -> str:
-    v = value.strip().strip("'\"")
-    if len(v) <= 8:
-        return "***"
-    return f"{v[:4]}…{v[-2:]}(len={len(v)})"
-
 
 def _size_str(fp: Path) -> str:
     try:

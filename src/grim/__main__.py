@@ -25,6 +25,19 @@ from .core.report import render_markdown, render_sarif, render_summary_line
 from .tools import TOOLS, call_tool
 
 
+def _path_arg(p: argparse.ArgumentParser, name: str = "path") -> None:
+    """Add a positional path plus a --path alias for the same value.
+
+    The README documents both `grim fix_plan PATH` and `grim fix_plan --path PATH`,
+    and `grim tool <name> --path` requires the flag form. argparse cannot alias a
+    positional to an optional directly, so the flag is stored separately and merged
+    in main(). The positional becomes optional so the flag alone is valid.
+    """
+    p.add_argument(name, nargs="?")
+    p.add_argument("--path", dest="_path_opt", default=None,
+                   help=f"alternative to the positional {name} argument")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="grim", description="GRIM — security audit for code, deps, exposure, drift")
     sub = parser.add_subparsers(dest="command")
@@ -34,7 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("list", help="list available tools")
 
     p_scan = sub.add_parser("scan", help="one-shot audit of a path or archive")
-    p_scan.add_argument("path")
+    _path_arg(p_scan)
     p_scan.add_argument("--format", choices=["md", "json", "sarif"], default="md")
     p_scan.add_argument("--out", default=None)
     p_scan.add_argument("--tools", default=None, help="subset: exposure,secrets,code,deps,iocs")
@@ -56,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     p_diff.add_argument("--deep", action="store_true")
 
     p_ci = sub.add_parser("ci", help="CI gate: scan and exit non-zero at or above --fail-on")
-    p_ci.add_argument("path")
+    _path_arg(p_ci)
     p_ci.add_argument("--fail-on", choices=["critical", "high", "medium", "low", "info"], default="high")
     p_ci.add_argument("--format", choices=["md", "json", "sarif"], default="md")
     p_ci.add_argument("--out", default=None)
@@ -65,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
     p_ci.add_argument("--deep", action="store_true")
 
     p_watch = sub.add_parser("watch", help="save a baseline and detect drift")
-    p_watch.add_argument("path")
+    _path_arg(p_watch)
     p_watch.add_argument("--save", action="store_true", help="save/refresh the baseline")
     p_watch.add_argument("--status", action="store_true", help="show baseline info")
     p_watch.add_argument("--baseline", default=None, help="baseline JSON path")
@@ -73,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
     p_watch.add_argument("--deep", action="store_true")
 
     p_fix = sub.add_parser("fix_plan", help="turn findings into a remediation plan and diffs")
-    p_fix.add_argument("path")
+    _path_arg(p_fix)
     p_fix.add_argument("--format", choices=["md", "json"], default="md")
     p_fix.add_argument("--out", default=None)
     p_fix.add_argument("--no-network", action="store_true")
@@ -81,40 +94,46 @@ def main(argv: list[str] | None = None) -> int:
     p_fix.add_argument("--deep", action="store_true")
 
     p_ep = sub.add_parser("endpoints", help="inventory application routes and rank risk")
-    p_ep.add_argument("path")
+    _path_arg(p_ep)
     p_ep.add_argument("--format", choices=["md", "json"], default="md")
     p_ep.add_argument("--out", default=None)
 
     p_live = sub.add_parser("check_live", help="authorized live checks: headers, cookies, TLS, exposed paths")
-    p_live.add_argument("url")
+    _path_arg(p_live, "url")
     p_live.add_argument("--scope", default=None, help="path to grim.scope.json")
     p_live.add_argument("--active", action="store_true", help="allow active probes (scope must also allow)")
     p_live.add_argument("--timeout", type=int, default=10)
     p_live.add_argument("--format", choices=["md", "json", "sarif"], default="md")
 
     p_mal = sub.add_parser("malware", help="malware scan: heuristics + IoC + optional ClamAV/YARA")
-    p_mal.add_argument("path")
+    _path_arg(p_mal)
     p_mal.add_argument("--deep", action="store_true")
     p_mal.add_argument("--format", choices=["md", "json", "sarif"], default="md")
 
     p_plan = sub.add_parser("plan", help="show the audit plan for a target")
-    p_plan.add_argument("path")
+    _path_arg(p_plan)
+    # Default stays json: plan has always emitted JSON and the test suite asserts it.
+    # The md renderer is available via --format md.
+    p_plan.add_argument("--format", choices=["md", "json"], default="json")
+    p_plan.add_argument("--out", default=None)
     p_plan.add_argument("--no-network", action="store_true")
     p_plan.add_argument("--deep", action="store_true")
 
     p_sbom = sub.add_parser("sbom", help="emit CycloneDX/SPDX SBOM")
-    p_sbom.add_argument("path")
-    p_sbom.add_argument("--format", choices=["cyclonedx", "spdx"], default="cyclonedx")
+    _path_arg(p_sbom)
+    # "json" is accepted as a synonym for the default cyclonedx dialect, since the
+    # tool always emits JSON; it keeps the CLI shape uniform with other subcommands.
+    p_sbom.add_argument("--format", choices=["cyclonedx", "spdx", "json"], default="cyclonedx")
     p_sbom.add_argument("--out", default=None)
 
     p_ledger = sub.add_parser("ledger", help="merge a scan into the persistent findings ledger")
-    p_ledger.add_argument("path")
+    _path_arg(p_ledger)
     p_ledger.add_argument("--ledger", default=None)
     p_ledger.add_argument("--tools", default=None)
     p_ledger.add_argument("--deep", action="store_true")
 
     p_iocs = sub.add_parser("iocs", help="match file hashes against the IoC store")
-    p_iocs.add_argument("path")
+    _path_arg(p_iocs)
     p_iocs.add_argument("--deep", action="store_true")
 
     p_feeds = sub.add_parser("update-feeds", help="sync the IoC store from a feed URL")
@@ -122,6 +141,13 @@ def main(argv: list[str] | None = None) -> int:
     p_feeds.add_argument("--ioc-path", default=None)
 
     args = parser.parse_args(argv)
+
+    # A --path flag and a positional path are two spellings of one argument.
+    if getattr(args, "_path_opt", None):
+        for attr in ("path", "url"):
+            if hasattr(args, attr):
+                setattr(args, attr, args._path_opt)
+                break
 
     if args.command in (None, "version"):
         print(f"grim {__version__}")
@@ -215,9 +241,21 @@ def main(argv: list[str] | None = None) -> int:
             print(text)
         return 0
     if args.command == "plan":
-        return _print_json(call_tool("plan", {"path": args.path,
-                                              "network": not args.no_network,
-                                              "deep": args.deep}))
+        plan_payload = call_tool("plan", {"path": args.path,
+                                          "network": not args.no_network,
+                                          "deep": args.deep})
+        if not plan_payload.get("ok"):
+            print(f"error: {plan_payload.get('error')}", file=sys.stderr)
+            return 1
+        plan_text = (json.dumps(plan_payload, indent=2, default=str)
+                     if args.format == "json" else _render_plan(plan_payload))
+        if args.out:
+            with open(args.out, "w", encoding="utf-8") as fh:
+                fh.write(plan_text)
+            print(f"wrote {args.out}")
+        else:
+            print(plan_text)
+        return 0
     if args.command == "endpoints":
         payload = call_tool("inventory_endpoints", {"path": args.path})
         if not payload.get("ok"):
@@ -242,7 +280,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "malware":
         return _emit(call_tool("malware_scan", {"path": args.path, "deep": bool(args.deep)}), args.format, None)
     if args.command == "sbom":
-        payload = call_tool("sbom", {"path": args.path, "format": args.format})
+        # The CLI --format selects the SBOM dialect, so accept both spellings:
+        # `sbom --format spdx` and `sbom --format json` (json is treated as
+        # cyclonedx, the default, since that is what the tool emits as JSON).
+        sbom_fmt = "cyclonedx" if args.format == "json" else args.format
+        payload = call_tool("sbom", {"path": args.path, "format": sbom_fmt})
         if not payload.get("ok"):
             print(f"error: {payload.get('error')}", file=sys.stderr)
             return 1
@@ -274,6 +316,28 @@ def main(argv: list[str] | None = None) -> int:
 def _print_json(payload: dict) -> int:
     print(json.dumps(payload, indent=2, default=str))
     return 0 if payload.get("ok") else 1
+
+
+def _render_plan(payload: dict) -> str:
+    """Human readable audit plan: target, detected stacks, ordered tool rationale."""
+    lines = ["# GRIM Audit Plan", ""]
+    lines.append(f"- target: {payload.get('target', '-')}")
+    if payload.get("is_archive"):
+        lines.append("- source: archive")
+    for st in payload.get("stacks", []) or []:
+        fw = st.get("framework") or "unknown framework"
+        lines.append(f"- stack: {st.get('language', '?')} ({fw})")
+    for wd in payload.get("web_dirs", []) or []:
+        lines.append(f"- web-served directory: {wd}")
+    for lf in payload.get("lockfiles", []) or []:
+        lines.append(f"- lockfile: {lf}")
+    lines.append("")
+    lines.append("## Ordered steps")
+    for i, step in enumerate(payload.get("plan", []) or [], 1):
+        lines.append(f"{i}. **{step.get('tool', '?')}** ({step.get('priority', 'normal')}) - {step.get('reason', '')}")
+    if not payload.get("plan"):
+        lines.append("No steps suggested.")
+    return "\n".join(lines) + "\n"
 
 
 def _render_endpoints(payload: dict) -> str:
