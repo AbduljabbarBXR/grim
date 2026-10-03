@@ -6,8 +6,10 @@ import hashlib
 import json
 import os
 import re
+import tarfile
 import threading
 import time
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import fields as dataclass_fields
 from pathlib import Path
@@ -1197,8 +1199,20 @@ def scan_code(
         raise FileNotFoundError(path)
     file_limit = max_files if max_files is not None else limits.resolve("GRIM_MAX_FILES", MAX_FILES)
     is_file = p.is_file()
-    if is_file:
+    # An archive target is scanned by reading its members in memory: `scan` advertises
+    # "path or archive", but until now only the exposure engine opened archives, so
+    # code and secrets inside a tarball or zip were silently skipped.
+    archive_members: list[tuple[str, str]] = []
+    if is_file and _is_archive(p):
+        member_cap = 20_000 if limits.is_unlimited(file_limit) else file_limit
+        byte_cap = limits.resolve("GRIM_MAX_CODE_FILE_BYTES", MAX_FILE_BYTES)
+        archive_members = _iter_archive_files(p, member_cap, byte_cap)
+        if stats is not None:
+            stats["archive_files"] = len(archive_members)
+    if is_file and not archive_members and not _is_archive(p):
         candidates = [p]
+    elif is_file:
+        candidates = []
     else:
         # Collect deterministically (sorted names) up to a hard ceiling, then apply the
         # limit after sorting so coverage does not depend on filesystem walk order.
@@ -1250,7 +1264,37 @@ def scan_code(
                 cache[key] = payload
         return result
 
+    def archive_task(member: tuple[str, str]) -> list[Finding]:
+        """Scan one archive member. Cached by member name and content hash."""
+        name, text = member
+        lang = _lang_of(Path(name))
+        if lang is None:
+            return []
+        virtual = Path(name)
+        if use_cache:
+            key = f"{version}:archive:{name}:{_hash_text(text)}"
+            with lock:
+                cached = cache.get(key)
+            if cached is not None:
+                return _from_dicts(cached)
+        result = _scan_text(text, virtual, lang)
+        result.extend(analyze_text(text, virtual, lang))
+        if use_cache:
+            with lock:
+                cache[key] = [f.to_dict() for f in result]
+        return result
+
     findings: list[Finding] = []
+    if archive_members:
+        # Archive members are scanned in memory and are not addressable by path, so
+        # they bypass the on-disk cache key and go through their own dispatch.
+        if workers > 1 and len(archive_members) > 1:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                for result in pool.map(archive_task, archive_members):
+                    findings.extend(result)
+        else:
+            for member in archive_members:
+                findings.extend(archive_task(member))
     if workers > 1 and len(files) > 1:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             for result in pool.map(task, files):
@@ -1259,7 +1303,7 @@ def scan_code(
         for fp in files:
             findings.extend(task(fp))
 
-    if use_cache and files:
+    if use_cache and (files or archive_members):
         _save_cache(cache)
 
     reasons: list[str] = []
@@ -1273,7 +1317,7 @@ def scan_code(
     if stats is not None:
         stats.update(
             {
-                "files_scanned": len(files),
+                "files_scanned": len(files) + len(archive_members),
                 "findings": len(findings),
                 "flow_findings": flow_findings,
                 "truncated": bool(reasons),
@@ -1282,6 +1326,66 @@ def scan_code(
             }
         )
     return findings
+
+
+def _is_archive(path: Path) -> bool:
+    """True when the path is a tar or zip archive GRIM can open."""
+    name = path.name.lower()
+    if zipfile.is_zipfile(path):
+        return True
+    return name.endswith((".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz"))
+
+
+def _iter_archive_files(path: Path, max_files: int, max_bytes: int) -> list[tuple[str, str]]:
+    """Return (archive_member_name, text) for scannable text files inside an archive.
+
+    Only regular files with a source extension are decoded, and each member is capped
+    so a zip bomb cannot exhaust memory. The cache is intentionally bypassed for
+    archive members: their content is not addressable by path on disk.
+    """
+    out: list[tuple[str, str]] = []
+
+    def _add(name: str, raw: bytes) -> None:
+        if len(out) >= max_files or not name or name.endswith("/"):
+            return
+        if _lang_of(Path(name)) is None:
+            return
+        if len(raw) > max_bytes:
+            raw = raw[:max_bytes]
+        try:
+            out.append((name, raw.decode("utf-8", errors="ignore")))
+        except Exception:
+            return
+
+    try:
+        if zipfile.is_zipfile(path):
+            with zipfile.ZipFile(path) as zf:
+                for info in zf.infolist()[:max_files * 4]:
+                    if info.is_dir():
+                        continue
+                    try:
+                        with zf.open(info) as fh:
+                            _add(info.filename, fh.read(max_bytes + 1))
+                    except (OSError, zipfile.BadZipFile, RuntimeError):
+                        continue
+            return out
+        with tarfile.open(path, "r:*") as tf:
+            for member in tf:
+                if len(out) >= max_files:
+                    break
+                if not member.isfile():
+                    continue
+                try:
+                    fh = tf.extractfile(member)
+                    if fh is None:
+                        continue
+                    with fh:
+                        _add(member.name, fh.read(max_bytes + 1))
+                except (OSError, tarfile.TarError):
+                    continue
+    except (OSError, tarfile.TarError, zipfile.BadZipFile, EOFError):
+        return out
+    return out
 
 
 def _walk(root: Path, max_files: int) -> list[Path]:

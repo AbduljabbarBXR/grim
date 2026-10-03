@@ -470,6 +470,72 @@ def test_cli_subcommands_accept_positional_path() -> None:
             check(f"grim {' '.join(cmd[:1])} <path> exits 0", proc.returncode == 0, proc.stderr[-200:])
 
 
+def test_cli_accepts_positional_and_flag_path() -> None:
+    """The README documents both `grim fix_plan PATH` and `grim fix_plan --path PATH`."""
+    print("CLI path argument alias")
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(ROOT / "src")
+    with tempfile.TemporaryDirectory() as td:
+        write(Path(td) / "app.py", "import subprocess\nsubprocess.run(cmd, shell=True)\n")
+        positional = ["fix_plan", "plan", "sbom", "scan", "endpoints", "malware"]
+        for cmd in positional:
+            a = subprocess.run(
+                [sys.executable, "-m", "grim", cmd, td],
+                capture_output=True, text=True, env=env, cwd=str(ROOT), timeout=120,
+            )
+            b = subprocess.run(
+                [sys.executable, "-m", "grim", cmd, "--path", td],
+                capture_output=True, text=True, env=env, cwd=str(ROOT), timeout=120,
+            )
+            check(f"grim {cmd} --path exits 0", b.returncode == 0, b.stderr[-160:])
+            if cmd == "sbom":
+                # An SBOM carries a fresh serialNumber and timestamp per build, so
+                # compare structure rather than bytes.
+                try:
+                    ja, jb = json.loads(a.stdout), json.loads(b.stdout)
+                    same = ja.get("bomFormat") == jb.get("bomFormat") and ja.get("specVersion") == jb.get("specVersion")
+                except json.JSONDecodeError:
+                    same = False
+            else:
+                same = a.stdout == b.stdout
+            check(
+                f"grim {cmd} positional and --path agree",
+                a.returncode == b.returncode and same,
+                f"rc {a.returncode} vs {b.returncode}",
+            )
+
+
+def test_cli_format_flags_accepted_everywhere() -> None:
+    """plan and sbom previously rejected --format, unlike every other subcommand."""
+    print("CLI --format consistency")
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(ROOT / "src")
+    with tempfile.TemporaryDirectory() as td:
+        write(Path(td) / "requirements.txt", "django==1.8.0\n")
+        for cmd, fmt in (("plan", "md"), ("plan", "json"), ("sbom", "spdx"), ("sbom", "json")):
+            proc = subprocess.run(
+                [sys.executable, "-m", "grim", cmd, td, "--format", fmt],
+                capture_output=True, text=True, env=env, cwd=str(ROOT), timeout=120,
+            )
+            check(f"grim {cmd} --format {fmt} exits 0", proc.returncode == 0, proc.stderr[-160:])
+
+
+def test_plan_markdown_renderer_is_readable() -> None:
+    print("plan markdown rendering")
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(ROOT / "src")
+    with tempfile.TemporaryDirectory() as td:
+        write(Path(td) / "requirements.txt", "django==1.8.0\n")
+        proc = subprocess.run(
+            [sys.executable, "-m", "grim", "plan", td, "--format", "md", "--no-network"],
+            capture_output=True, text=True, env=env, cwd=str(ROOT), timeout=120,
+        )
+        out = proc.stdout
+        check("plan md has heading", out.startswith("# GRIM Audit Plan"), out[:80])
+        check("plan md lists ordered steps", "audit_exposure" in out, out[:200])
+        check("plan md names the stack", "python" in out, out[:200])
+
+
 def test_mcp_handshake_reports_current_version() -> None:
     print("MCP handshake version")
     env = dict(os.environ)
@@ -482,6 +548,69 @@ def test_mcp_handshake_reports_current_version() -> None:
 
     check("grim version prints current", __version__ in proc.stdout, proc.stdout.strip())
 
+
+
+def test_archive_contents_are_scanned() -> None:
+    """`scan` documents "path or archive" but code and secrets skipped archive members.
+
+    Reproduced on 0.6.4: a tar.gz containing a webshell returned 0 findings and
+    `files_scanned: 0`, because only audit_exposure opened archives.
+    """
+    print("archive scanning")
+    import tarfile
+    import zipfile
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "src").mkdir()
+        (root / "src" / "evil.php").write_text("<?php system($_GET['c']); ?>\n")
+        (root / "src" / "conf.js").write_text(
+            'const DB_PASSWORD = "supersecret-prod-12345";\n')
+        (root / "src" / "creds.py").write_text(
+            'API_KEY = "x7Kd9Pq2Lm4Nv8Rt1Zc6Bw3Yh5Js0Ae1U"\n')
+        (root / "src" / "blob.bin").write_bytes(b"\x00\x01\x02" * 500)
+
+        tar_path = root / "bundle.tar.gz"
+        with tarfile.open(tar_path, "w:gz") as tf:
+            tf.add(root / "src" / "evil.php", arcname="src/evil.php")
+            tf.add(root / "src" / "conf.js", arcname="src/conf.js")
+            tf.add(root / "src" / "creds.py", arcname="src/creds.py")
+            tf.add(root / "src" / "blob.bin", arcname="src/blob.bin")
+
+        code = scan_code(str(tar_path))
+        check("archive code findings found", len(code) > 0, str(len(code)))
+        check("archive finding names the member",
+              any("evil.php" in f.location.get("file", "") for f in code),
+              str([f.location.get("file") for f in code]))
+
+        secrets_found = scan_secrets(str(tar_path))
+        titles_ = titles(secrets_found)
+        check("archive credential found",
+              any("credential assignment" in t for t in titles_), str(sorted(titles_)))
+        check("archive finding names the member",
+              any("conf.js" in f.location.get("file", "") or "creds.py" in f.location.get("file", "")
+                  for f in secrets_found),
+              str([f.location.get("file") for f in secrets_found]))
+
+        zip_path = root / "bundle.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.write(root / "src" / "evil.php", arcname="src/evil.php")
+            zf.write(root / "src" / "conf.js", arcname="src/conf.js")
+        zcode = scan_code(str(zip_path))
+        check("zip code findings found", len(zcode) > 0, str(len(zcode)))
+        zsec = scan_secrets(str(zip_path))
+        check("zip credential found", any("credential assignment" in t for t in titles(zsec)),
+              str(sorted(titles(zsec))))
+
+        # A binary member must not be decoded as text.
+        check("binary archive member skipped",
+              not any("blob.bin" in f.location.get("file", "") for f in scan_secrets(str(tar_path))),
+              "")
+
+        # A non-archive file path must still work exactly as before.
+        plain = root / "plain.py"
+        plain.write_text('API_KEY = "x7Kd9Pq2Lm4Nv8Rt1Zc6Bw3Yh5Js0Ae1U"\n')
+        check("plain file still scanned", len(scan_secrets(str(plain))) > 0, "")
 
 def main() -> int:
     tests = [
@@ -500,7 +629,11 @@ def main() -> int:
         test_attack_techniques_for_new_cwes,
         test_attack_catalog_grew,
         test_cli_subcommands_accept_positional_path,
+        test_cli_accepts_positional_and_flag_path,
+        test_cli_format_flags_accepted_everywhere,
+        test_plan_markdown_renderer_is_readable,
         test_mcp_handshake_reports_current_version,
+        test_archive_contents_are_scanned,
     ]
     for t in tests:
         t()
